@@ -10,6 +10,7 @@ mod ps1_symbols;
 mod sce_symbol_scanner;
 // Multi-platform backends: shared PowerPC decoder plus Xbox/360/GameCube/Genesis.
 mod gamecube;
+mod decomp_export;
 mod lzx;
 mod ppc_disasm;
 mod ps3;
@@ -2096,6 +2097,63 @@ fn get_sdk_db_stats(platform: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Export a complete decomp project (splat config, symbol files, build scaffold).
+/// This is the one-click export that eliminates manual project scaffolding.
+#[tauri::command]
+fn export_decomp_project(
+    path: String,
+    platform: String,
+    output_dir: String,
+) -> Result<decomp_export::DecompExportResult, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+
+    // Build sections and functions from whatever parser applies.
+    // For now, we use a generic ELF/section extraction.
+    let info = parse_elf_file(path.clone())?;
+    let funcs = detect_functions_inner(&info)?;
+
+    let sections: Vec<decomp_export::DecompSection> = info
+        .sections
+        .iter()
+        .map(|s| decomp_export::DecompSection {
+            name: s.name.clone(),
+            address: s.address as u64,
+            size: s.data.len(),
+            is_code: s.name.starts_with(".text") || s.name.starts_with(".init"),
+            file_offset: 0,
+        })
+        .collect();
+
+    let functions: Vec<decomp_export::DecompFunction> = funcs
+        .iter()
+        .map(|f| decomp_export::DecompFunction {
+            address: f.start as u64,
+            name: f.name.clone(),
+            size: f.size,
+            is_named: !f.name.starts_with("sub_"),
+            source: if !f.name.starts_with("sub_") {
+                decomp_export::FunctionSource::SdkMatch
+            } else {
+                decomp_export::FunctionSource::Heuristic
+            },
+        })
+        .collect();
+
+    Ok(decomp_export::generate_decomp_project(
+        &filename,
+        &platform,
+        &sections,
+        &functions,
+        info.entry_point as u64,
+        &output_dir,
+        info.is_little_endian,
+    ))
+}
+
 #[tauri::command]
 fn get_supported_formats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
@@ -2185,6 +2243,7 @@ async fn main() {
             disassemble_ps4ps5_section,
             scan_sdk_symbols,
             get_sdk_db_stats,
+            export_decomp_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");

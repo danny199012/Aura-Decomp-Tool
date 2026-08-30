@@ -79,6 +79,12 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **Multi-method matching** — By name (import tables, .fimports, .dynsym), by ordinal (Xbox kernel thunk tables), and by instruction-pattern signature (common libc functions like memcpy/memset/strlen on all platforms).
 - **Tauri commands** — `scan_sdk_symbols(path, platform)` returns matched symbols with descriptions; `get_sdk_db_stats(platform)` returns database coverage per platform.
 
+### One-Click Decomp Project Export
+- **Complete project scaffold** — Generates a ready-to-build decomp project in one click: `config.toml` (recompiler config), `functions.csv` (Name,Start,End,Size), `symbol_addrs.txt` (address to name mappings), `undefined_syms.txt` (unnamed function addresses), `splat.yaml` (segment splitter config), `build/Makefile` (platform-aware toolchain), and `README.md` (project-specific instructions with named function list and section table).
+- **Platform-aware build** — The Makefile auto-selects the correct cross-compiler toolchain (mips-elf for PS1/PS2, ppu-lv2 for PS3, powerpc-eabi for Wii U/GameCube, x86_64 for PS4/PS5, etc.).
+- **splat-compatible** — The `splat.yaml` output is structured for use with the popular [splat](https://github.com/ethteck/splat) segment splitter, with per-function subsegments in code sections.
+- **Tauri command** — `export_decomp_project(path, platform, output_dir)` writes all files and returns a summary with function counts and named/SDK-matched statistics.
+
 ---
 
 ## Tech Stack
