@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aura Decomp Tool</title>
+    <!-- Apply the saved theme before CSS/JS loads so first paint is correct
+         (prevents a flash of the default theme on startup). Validates against
+         the known theme list so a stale/garbage value can't inject attributes. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('aura-theme');
+          if (t === 'midnight' || t === 'aurora' || t === 'synthwave' || t === 'carbon') {
+            document.documentElement.setAttribute('data-theme', t);
+          }
+        } catch (e) { /* localStorage blocked — default Midnight applies */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
