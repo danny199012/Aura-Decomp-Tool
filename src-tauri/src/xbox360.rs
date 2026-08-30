@@ -5,8 +5,10 @@
 //! on this page are big-endian unless noted (the embedded PE headers are
 //! little-endian, as on Windows).
 
+use crate::lzx;
 use crate::ppc_disasm::{disassemble_ppc_at, PpcEndian, PpcInstruction};
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 
 // ---- Optional header keys (xex2_header_keys) ----
 const XEX_HEADER_RESOURCE_INFO: u32 = 0x0000_02FF;
@@ -236,6 +238,9 @@ pub struct XexFileInfo {
     pub data_offset: u32,
     pub security_offset: u32,
     pub load_address: u32,
+    /// Uncompressed PE image size (from the security info page descriptors).
+    /// Needed by LZX decompression to know how many bytes to produce.
+    pub image_size: u32,
     pub image_flags: u32,
     pub image_flag_names: Vec<String>,
     pub region: u32,
@@ -326,6 +331,7 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
     let mut encryption = "unknown".to_string();
     let mut compression = "unknown".to_string();
     let mut basic_blocks: Option<Vec<(u32, u32)>> = None;
+    let mut lzx_info: Option<(u32, u32, [u8; 20])> = None;
 
     for i in 0..header_count.min(512) {
         let off = 0x18 + (i as usize) * 8;
@@ -427,9 +433,11 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
                 import_libraries = parse_import_libraries(data, off);
             }
             (XEX_HEADER_FILE_FORMAT_INFO, OptData::LenPrefixed(off)) => {
-                if off + 8 <= data.len() {
-                    let enc = ru16be(data, off + 4);
-                    let comp = ru16be(data, off + 6);
+                // xex2_opt_file_format_info:
+                //   { u32 info_size, u32 encryption_type, u32 compression_type, ... }
+                if off + 12 <= data.len() {
+                    let enc = ru32be(data, off + 4);
+                    let comp = ru32be(data, off + 8);
                     encryption = match enc {
                         0 => "none".to_string(),
                         1 => "normal".to_string(),
@@ -444,6 +452,8 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
                     };
                     if comp == 1 {
                         basic_blocks = read_basic_blocks(data);
+                    } else if comp == 2 {
+                        lzx_info = read_normal_lzx_info(data);
                     }
                 }
             }
@@ -472,8 +482,10 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
     }
 
     // ---- Embedded PE ----
-    let pe_extractable =
-        encryption == "none" && (compression == "none" || compression == "basic");
+    let pe_extractable = encryption == "none"
+        && (compression == "none"
+            || compression == "basic"
+            || compression == "normal (LZX)");
     let mut pe_sections = Vec::new();
     let mut pe_exports = Vec::new();
     let mut final_image_base = image_base.or(original_base);
@@ -483,6 +495,7 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
             data_offset as usize,
             &compression,
             &basic_blocks,
+            &lzx_info,
             image_size,
         );
         if let Ok(pe) = pe {
@@ -514,6 +527,7 @@ pub fn parse_xex(data: &[u8], filename: &str) -> Result<XexFileInfo, String> {
         region_names: decode_region(region),
         entry_point,
         image_base: final_image_base,
+        image_size,
         original_pe_name,
         default_stack_size,
         default_heap_size,
@@ -594,6 +608,7 @@ fn extract_pe_image(
     data_offset: usize,
     compression: &str,
     basic_blocks: &Option<Vec<(u32, u32)>>,
+    lzx_info: &Option<(u32, u32, [u8; 20])>,
     image_size: u32,
 ) -> Result<Vec<u8>, String> {
     if data_offset >= data.len() {
@@ -628,8 +643,60 @@ fn extract_pe_image(
             }
             Ok(out)
         }
+        "normal (LZX)" => {
+            // De-block + LZX decompress (unencrypted images only; encrypted
+            // images are rejected earlier by `pe_extractable`).
+            let (window_size, first_block_size, _) = lzx_info
+                .as_ref()
+                .ok_or_else(|| "Missing LZX compression info".to_string())?;
+            let first_block_size = *first_block_size;
+            if first_block_size == 0 {
+                return Err("LZX block table is empty".to_string());
+            }
+            // De-block: each block is { 4B next_block_size, 20B hash, chunks... }
+            let mut lzx_stream = Vec::new();
+            let mut p = data_offset;
+            let mut cur_block_size = first_block_size;
+            for _ in 0..0x10000 {
+                if cur_block_size < 24 || p + cur_block_size as usize > data.len() {
+                    return Err("LZX block runs past end of file".to_string());
+                }
+                let block_end = p + cur_block_size as usize;
+                let next_block_size = ru32be(data, p);
+                let mut cp = p + 24; // skip embedded next-block descriptor
+                while cp + 2 <= block_end {
+                    let chunk_size = ((data[cp] as usize) << 8) | (data[cp + 1] as usize);
+                    cp += 2;
+                    if chunk_size == 0 {
+                        break;
+                    }
+                    if cp + chunk_size > block_end {
+                        return Err("LZX chunk runs past end of block".to_string());
+                    }
+                    lzx_stream.extend_from_slice(&data[cp..cp + chunk_size]);
+                    cp += chunk_size;
+                }
+                p = block_end;
+                cur_block_size = next_block_size;
+                if cur_block_size == 0 {
+                    break;
+                }
+            }
+            if cur_block_size != 0 {
+                return Err("LZX block table too large or unterminated".to_string());
+            }
+            let out_len = if image_size > 0 {
+                image_size as usize
+            } else {
+                return Err(
+                    "LZX decompression requires the image size from security info".to_string(),
+                );
+            };
+            lzx::lzx_decompress(&lzx_stream, *window_size, out_len)
+                .map_err(|e| format!("LZX decompression failed: {:?}", e))
+        }
         other => Err(format!(
-            "XEX image uses {} compression — only unencrypted raw/basic images can be disassembled",
+            "XEX image uses {} compression — only unencrypted raw/basic/LZX images can be disassembled",
             other
         )),
     }
@@ -755,8 +822,8 @@ fn parse_pe(pe: &[u8]) -> Option<ParsedPe> {
 
 /// Disassemble a PE section of an XEX as big-endian PowerPC (Xenon).
 ///
-/// Only works for unencrypted images with raw/basic compression; retail
-/// LZX-compressed or encrypted XEXes return an explanatory error.
+/// Works for unencrypted images with raw, basic (zero-fill), or normal (LZX)
+/// compression. Encrypted retail XEXes return an explanatory error.
 pub fn disassemble_xex_section(
     data: &[u8],
     section_name: &str,
@@ -765,7 +832,7 @@ pub fn disassemble_xex_section(
     let info = parse_xex(data, "xex")?;
     if info.encryption != "none" {
         return Err(format!(
-            "XEX is encrypted ({}) — decryption is not supported",
+            "XEX is encrypted ({}) — AES-128-CBC decryption is not yet supported",
             info.encryption
         ));
     }
@@ -776,7 +843,15 @@ pub fn disassemble_xex_section(
         .ok_or_else(|| format!("PE section '{}' not found", section_name))?
         .clone();
     let blocks = read_basic_blocks(data);
-    let pe = extract_pe_image(data, info.data_offset as usize, &info.compression, &blocks, 0)?;
+    let lzx_info = read_normal_lzx_info(data);
+    let pe = extract_pe_image(
+        data,
+        info.data_offset as usize,
+        &info.compression,
+        &blocks,
+        &lzx_info,
+        info.image_size,
+    )?;
     let start = section.raw_offset as usize;
     let end = (start + section.raw_size as usize).min(pe.len());
     if start >= pe.len() {
@@ -811,11 +886,11 @@ fn read_basic_blocks(data: &[u8]) -> Option<Vec<(u32, u32)>> {
             continue;
         }
         if let Some(OptData::LenPrefixed(foff)) = opt_data(data, ru32be(data, off), ru32be(data, off + 4)) {
-            if foff + 8 > data.len() || ru16be(data, foff + 6) != 1 {
+            if foff + 12 > data.len() || ru32be(data, foff + 8) != 1 {
                 return None; // not basic compression
             }
             let mut blocks = Vec::new();
-            let mut boff = foff + 8;
+            let mut boff = foff + 12;
             while boff + 8 <= data.len() && blocks.len() <= 0x10000 {
                 let d = ru32be(data, boff);
                 let z = ru32be(data, boff + 4);
@@ -826,6 +901,46 @@ fn read_basic_blocks(data: &[u8]) -> Option<Vec<(u32, u32)>> {
                 boff += 8;
             }
             return Some(blocks);
+        }
+    }
+    None
+}
+
+/// Scan the optional headers for the file format info and return the normal
+/// (LZX) compression info: `(window_size, first_block_size, first_block_hash)`.
+///
+/// The first block descriptor lives in the header; subsequent block
+/// descriptors are embedded in the compressed data itself (see
+/// [`extract_pe_image`]).
+fn read_normal_lzx_info(data: &[u8]) -> Option<(u32, u32, [u8; 20])> {
+    if data.len() < 0x18 || !is_xex(data) {
+        return None;
+    }
+    let header_count = ru32be(data, 0x14);
+    for i in 0..header_count.min(512) {
+        let off = 0x18 + (i as usize) * 8;
+        if off + 8 > data.len() {
+            break;
+        }
+        if ru32be(data, off) != XEX_HEADER_FILE_FORMAT_INFO {
+            continue;
+        }
+        if let Some(OptData::LenPrefixed(foff)) = opt_data(data, ru32be(data, off), ru32be(data, off + 4)) {
+            // xex2_opt_file_format_info at foff:
+            //   +0:  info_size      (u32 BE)
+            //   +4:  encryption_type (u32 BE)
+            //   +8:  compression_type (u32 BE)
+            //  +12:  compression_info.normal.window_size (u32 BE)
+            //  +16:  compression_info.normal.first_block.block_size (u32 BE)
+            //  +20:  compression_info.normal.first_block.block_hash[20]
+            if foff + 40 > data.len() || ru32be(data, foff + 8) != 2 {
+                return None; // not LZX
+            }
+            let window_size = ru32be(data, foff + 12);
+            let block_size = ru32be(data, foff + 16);
+            let mut block_hash = [0u8; 20];
+            block_hash.copy_from_slice(&data[foff + 20..foff + 40]);
+            return Some((window_size, block_size, block_hash));
         }
     }
     None

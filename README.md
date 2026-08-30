@@ -49,10 +49,11 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 
 ### Xbox 360 (XEX)
 - **XEX parsing** — XEX0/XEX1/XEX2 headers, all optional headers (entry point, image base, TLS, system flags), execution info (title ID, media/version/disc), static + import libraries.
-- **Security info** — Load address, image flags, region decoding, page descriptors.
-- **Embedded PE extraction** — Unencrypted raw and basic (zero-fill) compressed images are fully parsed: PE sections, image base, entry point, and exports by name.
+- **Security info** — Load address, image flags, region decoding, page descriptors, image size.
+- **Embedded PE extraction** — Unencrypted raw, basic (zero-fill), and **normal (LZX)** compressed images are fully parsed: PE sections, image base, entry point, and exports by name.
+- **LZX decompression** — A pure-Rust Microsoft LZX decompressor (`lzx.rs`, ported from libmspack's `lzxd.c`) handles XEX "normal" compression. It supports all window sizes (15–21 bits), VERBATIM/ALIGNED/UNCOMPRESSED block types, and multi-frame streams with window wrap. Validated against genuine LZX data compressed by the `liblzx` compressor (CAB DELTA variant) and cross-checked with libmspack's C decompressor.
 - **PowerPC disassembly** — Shared big-endian PowerPC disassembler (Gekko/Xenon), covering integer, float, CR/branch, and 64-bit (ld/std) instructions, with common assembler aliases.
-- **Encrypted/LZX note** — Retail images protected with encryption or LZX "normal" compression are identified and reported gracefully (metadata always parses; code disassembly requires an unencrypted image).
+- **Encrypted note** — Retail images protected with AES-128-CBC encryption are identified and reported gracefully (metadata always parses; code disassembly requires an unencrypted image). Decryption of retail XEX keys is not yet implemented.
 
 ### GameCube & Sega Genesis (backend-level)
 - GameCube ELF parser + PowerPC disassembly, and a Sega Genesis 68k decoder ship in the repo (`gamecube.rs`, `sega_genesis.rs`, `ppc_disasm.rs`).

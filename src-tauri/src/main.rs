@@ -10,6 +10,7 @@ mod ps1_symbols;
 mod sce_symbol_scanner;
 // Multi-platform backends: shared PowerPC decoder plus Xbox/360/GameCube/Genesis.
 mod gamecube;
+mod lzx;
 mod ppc_disasm;
 mod sega_genesis;
 mod xbox;
