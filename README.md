@@ -58,6 +58,21 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 ### GameCube & Sega Genesis (backend-level)
 - GameCube ELF parser + PowerPC disassembly, and a Sega Genesis 68k decoder ship in the repo (`gamecube.rs`, `sega_genesis.rs`, `ppc_disasm.rs`).
 
+### Wii U (RPX/RPL)
+- **Cafe ELF64 parsing** — Big-endian ELF64 with e_machine = EM_PPC64 (21). RPX (main executable) and RPL (shared library) files are identified and parsed: entry point, section headers, code/data sections.
+- **.fimports / .fexports** — Best-effort extraction of function import/export names from the Cafe-specific `.fimports` and `.fexports` sections, plus `.symtab`/`.strtab` symbol resolution when present.
+- **PowerPC disassembly** — Shared big-endian PPC disassembler (`ppc_disasm.rs` with `PpcEndian::Big`).
+
+### PlayStation 3 (SELF / ELF)
+- **SELF wrapper parsing** — Identifies the SCE magic, scans for the embedded ELF, and parses it when unencrypted. Encrypted retail SELFs return a graceful error.
+- **BE ELF parsing** — Both ELF32 and ELF64 big-endian PowerPC executables (homebrew) are fully parsed: entry point, section headers, code sections.
+- **PowerPC disassembly** — Shared big-endian PPC disassembler. SPU/SPE disassembly is out of scope (different ISA).
+
+### PlayStation 4 & PlayStation 5 (SELF / ELF)
+- **LE ELF64 x86-64 parsing** — Little-endian ELF64 with e_machine = EM_X86_64 (62) for homebrew executables. Sections, entry point, and ORBIS ELF note detection.
+- **SELF wrapper parsing** — Identifies the SCE magic, scans for the embedded ELF, and parses it when unencrypted. Retail PS4/PS5 SELFs are key-gated and return a graceful error.
+- **x86-64 disassembly** — 64-bit Intel-syntax disassembly via `iced-x86` (reusing the same crate as the OG Xbox 32-bit decoder, at bitness 64).
+
 ---
 
 ## Tech Stack

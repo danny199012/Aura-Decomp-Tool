@@ -12,7 +12,10 @@ mod sce_symbol_scanner;
 mod gamecube;
 mod lzx;
 mod ppc_disasm;
+mod ps3;
+mod ps4ps5;
 mod sega_genesis;
+mod wiiu;
 mod xbox;
 mod xbox360;
 
@@ -306,6 +309,11 @@ fn identify_file(path: String) -> Result<String, String> {
     if h.len() >= 4 && &h[0..3] == b"XEX" && (b'0'..=b'2').contains(&h[3]) {
         return Ok("xex".into());
     }
+    // PS3/PS4/PS5 SELF: "SCE\0"
+    if h.len() >= 4 && &h[0..3] == b"SCE" && h[3] == 0 {
+        return Ok("self".into());
+    }
+    // Wii U RPX/RPL: BE ELF64 with e_machine==21 — detected by reading more bytes
     Ok("raw".into())
 }
 
@@ -1955,6 +1963,63 @@ fn disassemble_xex(
     xbox360::disassemble_xex_section(&data, &section_name, max_instructions.unwrap_or(5000))
 }
 
+/// Parse a Wii U RPX/RPL (Cafe ELF64 big-endian PPC64).
+#[tauri::command]
+fn parse_wiiu_file(path: String) -> Result<wiiu::WiiUFileInfo, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+    wiiu::parse_rpx_rpl(&data, &filename)
+}
+
+/// Disassemble a section of a Wii U RPX/RPL as big-endian PowerPC64.
+#[tauri::command]
+fn disassemble_wiiu_section(
+    path: String,
+    section_name: String,
+    max_instructions: Option<usize>,
+) -> Result<Vec<ppc_disasm::PpcInstruction>, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    wiiu::disassemble_rpx_section(&data, &section_name, max_instructions.unwrap_or(5000))
+}
+
+/// Parse a PS3 executable (SELF or plain BE ELF).
+#[tauri::command]
+fn parse_ps3_file(path: String) -> Result<ps3::Ps3FileInfo, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+    ps3::parse_ps3(&data, &filename)
+}
+
+/// Disassemble a section of a PS3 executable as big-endian PowerPC.
+#[tauri::command]
+fn disassemble_ps3_section(
+    path: String,
+    section_name: String,
+    max_instructions: Option<usize>,
+) -> Result<Vec<ppc_disasm::PpcInstruction>, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    ps3::disassemble_ps3_section(&data, &section_name, max_instructions.unwrap_or(5000))
+}
+
+/// Parse a PS4/PS5 executable (SELF or plain LE ELF64 x86-64).
+#[tauri::command]
+fn parse_ps4ps5_file(path: String) -> Result<ps4ps5::Ps4Ps5FileInfo, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+    ps4ps5::parse_ps4ps5(&data, &filename)
+}
+
+/// Disassemble a section of a PS4/PS5 executable as 64-bit x86.
+#[tauri::command]
+fn disassemble_ps4ps5_section(
+    path: String,
+    section_name: String,
+    max_instructions: Option<usize>,
+) -> Result<Vec<ps4ps5::X64Instruction>, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    ps4ps5::disassemble_ps4ps5_section(&data, &section_name, max_instructions.unwrap_or(5000))
+}
+
 #[tauri::command]
 fn get_supported_formats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
@@ -1975,14 +2040,19 @@ fn get_supported_formats() -> Result<serde_json::Value, String> {
                 "platforms": ["PS2"]
             },
             {
-                "name": "PlayStation 3 ELF",
-                "extensions": [".elf", ".sprx"],
+                "name": "PlayStation 3 SELF/ELF",
+                "extensions": [".self", ".elf", ".sprx"],
                 "platforms": ["PS3"]
             },
             {
-                "name": "PlayStation 4/5 PUP/SPRU",
-                "extensions": [".pup", ".spru", ".zip"],
+                "name": "PlayStation 4/5 SELF/ELF",
+                "extensions": [".self", ".elf", ".bin"],
                 "platforms": ["PS4", "PS5"]
+            },
+            {
+                "name": "Wii U RPX/RPL",
+                "extensions": [".rpx", ".rpl"],
+                "platforms": ["Wii U"]
             },
             {
                 "name": "Original Xbox Executable (XBE)",
@@ -2031,6 +2101,12 @@ async fn main() {
             disassemble_xbe,
             parse_xex_file,
             disassemble_xex,
+            parse_wiiu_file,
+            disassemble_wiiu_section,
+            parse_ps3_file,
+            disassemble_ps3_section,
+            parse_ps4ps5_file,
+            disassemble_ps4ps5_section,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");
