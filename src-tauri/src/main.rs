@@ -14,6 +14,7 @@ mod lzx;
 mod ppc_disasm;
 mod ps3;
 mod ps4ps5;
+mod sdk_symbols;
 mod sega_genesis;
 mod wiiu;
 mod xbox;
@@ -2020,6 +2021,81 @@ fn disassemble_ps4ps5_section(
     ps4ps5::disassemble_ps4ps5_section(&data, &section_name, max_instructions.unwrap_or(5000))
 }
 
+/// Scan a binary's import names against the cross-platform SDK symbol database.
+/// Returns matches with library attribution and descriptions — the \"killer
+/// feature\" that auto-names functions without manual symbol import.
+#[tauri::command]
+fn scan_sdk_symbols(
+    path: String,
+    platform: String,
+) -> Result<sdk_symbols::SdkScanResult, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let plat = match platform.as_str() {
+        "PS1" => sdk_symbols::Platform::Ps1,
+        "PS2" => sdk_symbols::Platform::Ps2,
+        "PS3" => sdk_symbols::Platform::Ps3,
+        "PS4" => sdk_symbols::Platform::Ps4,
+        "PS5" => sdk_symbols::Platform::Ps5,
+        "Xbox" => sdk_symbols::Platform::Xbox,
+        "Xbox 360" => sdk_symbols::Platform::Xbox360,
+        "Wii U" => sdk_symbols::Platform::WiiU,
+        "GameCube" => sdk_symbols::Platform::GameCube,
+        "Wii" => sdk_symbols::Platform::Wii,
+        "Sega Genesis" => sdk_symbols::Platform::SegaGenesis,
+        _ => return Err(format!("Unknown platform: {}", platform)),
+    };
+
+    // Collect names from .fimports (Wii U), ELF symbols, or other import tables.
+    // For now, extract all ASCII strings that look like function names.
+    let mut names: Vec<(String, u64)> = Vec::new();
+    let mut i = 0;
+    while i + 2 < data.len() {
+        if data[i].is_ascii_alphabetic() || data[i] == b'_' {
+            let end = data[i..]
+                .iter()
+                .position(|&b| b == 0 || !b.is_ascii_graphic())
+                .map(|n| i + n)
+                .unwrap_or(i + 64);
+            if end - i >= 3 && end - i <= 256 {
+                let name = String::from_utf8_lossy(&data[i..end]).to_string();
+                if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
+                    names.push((name, i as u64));
+                }
+            }
+            i = end + 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    Ok(sdk_symbols::match_by_names(&names, plat))
+}
+
+/// Get the SDK database statistics for a given platform.
+#[tauri::command]
+fn get_sdk_db_stats(platform: String) -> Result<serde_json::Value, String> {
+    let plat = match platform.as_str() {
+        "PS1" => sdk_symbols::Platform::Ps1,
+        "PS2" => sdk_symbols::Platform::Ps2,
+        "PS3" => sdk_symbols::Platform::Ps3,
+        "PS4" => sdk_symbols::Platform::Ps4,
+        "PS5" => sdk_symbols::Platform::Ps5,
+        "Xbox" => sdk_symbols::Platform::Xbox,
+        "Xbox 360" => sdk_symbols::Platform::Xbox360,
+        "Wii U" => sdk_symbols::Platform::WiiU,
+        "GameCube" => sdk_symbols::Platform::GameCube,
+        "Wii" => sdk_symbols::Platform::Wii,
+        "Sega Genesis" => sdk_symbols::Platform::SegaGenesis,
+        _ => return Err(format!("Unknown platform: {}", platform)),
+    };
+    Ok(serde_json::json!({
+        "platform": plat.as_str(),
+        "symbol_count": sdk_symbols::db_count_for_platform(plat),
+        "libraries": sdk_symbols::libraries_for_platform(plat),
+        "total_symbols_all_platforms": sdk_symbols::db_count_total(),
+    }))
+}
+
 #[tauri::command]
 fn get_supported_formats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
@@ -2107,6 +2183,8 @@ async fn main() {
             disassemble_ps3_section,
             parse_ps4ps5_file,
             disassemble_ps4ps5_section,
+            scan_sdk_symbols,
+            get_sdk_db_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");

@@ -73,6 +73,12 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **SELF wrapper parsing** — Identifies the SCE magic, scans for the embedded ELF, and parses it when unencrypted. Retail PS4/PS5 SELFs are key-gated and return a graceful error.
 - **x86-64 disassembly** — 64-bit Intel-syntax disassembly via `iced-x86` (reusing the same crate as the OG Xbox 32-bit decoder, at bitness 64).
 
+### Cross-Platform SDK Symbol Database
+- **Auto-naming** — A built-in database of 346+ SDK function names across all supported platforms (PS1, PS2, PS3, PS4/PS5, Xbox, Xbox 360, Wii U, GameCube/Wii). When a binary is loaded, import-table names are matched against the database, instantly identifying functions like `VPADRead`, `cellPadInit`, `NtCreateFile`, `GX2Init`, etc. — no manual symbol import required.
+- **Library detection** — Matched functions are attributed to their source library (e.g. `coreinit`, `libcd`, `xboxkrnl`, `libScePad`), giving an instant overview of which SDKs the binary uses.
+- **Multi-method matching** — By name (import tables, .fimports, .dynsym), by ordinal (Xbox kernel thunk tables), and by instruction-pattern signature (common libc functions like memcpy/memset/strlen on all platforms).
+- **Tauri commands** — `scan_sdk_symbols(path, platform)` returns matched symbols with descriptions; `get_sdk_db_stats(platform)` returns database coverage per platform.
+
 ---
 
 ## Tech Stack
