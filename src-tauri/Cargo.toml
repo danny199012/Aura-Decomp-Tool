@@ -14,6 +14,8 @@ tauri-plugin-dialog = "2.0"
 # SHA-1 is required by the SCE SDK symbol matcher (ps2recomp computes a
 # SHA-1 over each candidate function body after masking out relocated words).
 sha1 = "0.10"
+# iced-x86 decodes/formats 32-bit x86 for the original Xbox (XBE) backend.
+iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 
 [dev-dependencies]
 tauri-build = { version = "2.0" }

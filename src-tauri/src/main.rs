@@ -8,6 +8,12 @@ mod ps1_memory_map;
 mod ps1_recomp_export;
 mod ps1_symbols;
 mod sce_symbol_scanner;
+// Multi-platform backends: shared PowerPC decoder plus Xbox/360/GameCube/Genesis.
+mod gamecube;
+mod ppc_disasm;
+mod sega_genesis;
+mod xbox;
+mod xbox360;
 
 use sce_symbol_scanner::{CodeSection, SceSymbolDatabase, SceSymbolMatch};
 use serde::{Deserialize, Serialize};
@@ -290,6 +296,14 @@ fn identify_file(path: String) -> Result<String, String> {
     // PS-X executable: "PS-X EXE" at offset 0
     if h.len() >= 8 && &h[0..8] == b"PS-X EXE" {
         return Ok("psx-exe".into());
+    }
+    // Original Xbox executable: "XBEH"
+    if h.len() >= 4 && &h[0..4] == b"XBEH" {
+        return Ok("xbe".into());
+    }
+    // Xbox 360 executable: "XEX0" / "XEX1" / "XEX2"
+    if h.len() >= 4 && &h[0..3] == b"XEX" && (b'0'..=b'2').contains(&h[3]) {
+        return Ok("xex".into());
     }
     Ok("raw".into())
 }
@@ -1894,6 +1908,52 @@ fn decompile_function(request: DecompileRequest) -> Result<DecompileResponse, St
     })
 }
 
+/// Parse an original Xbox XBE executable (header, certificate, sections,
+/// library versions, xboxkrnl imports, XOR-decoded entry point).
+#[tauri::command]
+fn parse_xbe_file(path: String) -> Result<xbox::XbeFileInfo, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    xbox::parse_xbe(&data, &filename)
+}
+
+/// Disassemble a named section of an original Xbox XBE (32-bit x86, Intel syntax).
+#[tauri::command]
+fn disassemble_xbe(
+    path: String,
+    section_name: String,
+    max_instructions: Option<usize>,
+) -> Result<Vec<xbox::X86Instruction>, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    xbox::disassemble_xbe_section(&data, &section_name, max_instructions.unwrap_or(5000))
+}
+
+/// Parse an Xbox 360 XEX executable (optional headers, security info,
+/// import libraries, embedded PE sections and exports when unencrypted).
+#[tauri::command]
+fn parse_xex_file(path: String) -> Result<xbox360::XexFileInfo, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    xbox360::parse_xex(&data, &filename)
+}
+
+/// Disassemble a PE section of an Xbox 360 XEX as big-endian PowerPC (Xenon).
+#[tauri::command]
+fn disassemble_xex(
+    path: String,
+    section_name: String,
+    max_instructions: Option<usize>,
+) -> Result<Vec<ppc_disasm::PpcInstruction>, String> {
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    xbox360::disassemble_xex_section(&data, &section_name, max_instructions.unwrap_or(5000))
+}
+
 #[tauri::command]
 fn get_supported_formats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
@@ -1922,6 +1982,16 @@ fn get_supported_formats() -> Result<serde_json::Value, String> {
                 "name": "PlayStation 4/5 PUP/SPRU",
                 "extensions": [".pup", ".spru", ".zip"],
                 "platforms": ["PS4", "PS5"]
+            },
+            {
+                "name": "Original Xbox Executable (XBE)",
+                "extensions": [".xbe"],
+                "platforms": ["Xbox"]
+            },
+            {
+                "name": "Xbox 360 Executable (XEX)",
+                "extensions": [".xex"],
+                "platforms": ["Xbox 360"]
             }
         ]
     }))
@@ -1956,6 +2026,10 @@ async fn main() {
             get_supported_formats,
             identify_gb_rom,
             disassemble_gb_rom,
+            parse_xbe_file,
+            disassemble_xbe,
+            parse_xex_file,
+            disassemble_xex,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");

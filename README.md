@@ -41,6 +41,22 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **Theme system** — Four built-in themes (Midnight, Aurora, Synthwave, Carbon) with persistent selection via `localStorage`.
 - **Bottom console panel** — Timestamped log entries at INFO/WARN/ERROR/DEBUG levels with color-coded severity.
 
+### Original Xbox (XBE)
+- **XBE parsing** — Header, certificate (title ID + UTF-16 title name, region, allowed media), sections, library versions, and xboxkrnl.exe imports.
+- **XOR-key decoding** — Entry point and kernel thunk addresses decoded with the correct retail/debug/beta keys; build type auto-detected.
+- **Import resolution** — Kernel thunk table resolved against the full 375-entry xboxkrnl ordinal table (`DbgPrint`, `NtCreateFile`, etc.).
+- **x86 disassembly** — 32-bit Intel-syntax disassembly via `iced-x86` (the OG Xbox runs a Pentium III).
+
+### Xbox 360 (XEX)
+- **XEX parsing** — XEX0/XEX1/XEX2 headers, all optional headers (entry point, image base, TLS, system flags), execution info (title ID, media/version/disc), static + import libraries.
+- **Security info** — Load address, image flags, region decoding, page descriptors.
+- **Embedded PE extraction** — Unencrypted raw and basic (zero-fill) compressed images are fully parsed: PE sections, image base, entry point, and exports by name.
+- **PowerPC disassembly** — Shared big-endian PowerPC disassembler (Gekko/Xenon), covering integer, float, CR/branch, and 64-bit (ld/std) instructions, with common assembler aliases.
+- **Encrypted/LZX note** — Retail images protected with encryption or LZX "normal" compression are identified and reported gracefully (metadata always parses; code disassembly requires an unencrypted image).
+
+### GameCube & Sega Genesis (backend-level)
+- GameCube ELF parser + PowerPC disassembly, and a Sega Genesis 68k decoder ship in the repo (`gamecube.rs`, `sega_genesis.rs`, `ppc_disasm.rs`).
+
 ---
 
 ## Tech Stack

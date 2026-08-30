@@ -2,6 +2,7 @@
 // Provides alternative-to-Ghidra decompilation support for Sega platforms
 
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as FmtWrite;
 use std::fs;
 
 // ===================== Sega Genesis/Master System ROM Header =====================
@@ -74,7 +75,7 @@ const CC_NAMES: [&str; 16] = [
     "ne",  // $C - Not equal
     "geu", // $D - Greater than or equal unsigned (same as hs)
     "cs",  // $E - Carry set (same as hs)
-    "true",$F - True (always)
+    "true", // $F - True (always)
 ];
 
 /// Parse a data register (D0-D7) from bits [2:0]
@@ -126,7 +127,7 @@ enum EaFormat {
     AddressRegisterIndirectWithPostIncrement(&'static str),
     AddressRegisterIndirectWithPreDecrement(&'static str),
     AddressRegisterIndirectWithDisplacement(u16, &'static str),
-    AddressRegisterIndirectWithIndex(u8, &'static str, &'static str), // index, base, displacement info
+    AddressRegisterIndirectWithIndex(u8, &'static str, String), // index, base, displacement info
     AbsoluteShort(u32),
     AbsoluteLong(u32),
     ProgramCounterWithDisplacement(u16, u32), // displacement, pc_base
@@ -147,7 +148,7 @@ fn format_ea(ea: &EaFormat) -> String {
             format!("{:x}({})", off, r)
         }
         EaFormat::AddressRegisterIndirectWithIndex(idx, base, disp) => {
-            if *disp == "a0" || *disp == "a1" {
+            if disp == "a0" || disp == "a1" {
                 // Indexed with displacement
                 format!("({}{}, {}{})", idx, base, disp, *idx)
             } else {
@@ -226,9 +227,9 @@ fn parse_ea_mode(data: &[u8], offset: usize, mode_bits: u8, is_register: bool, b
             // Displaced - 8-bit signed displacement
             let disp = data[offset + 2] as i8;
             let disp_val = if is_register {
-                format!("{:+d}({})", disp, ea_reg)
+                format!("{:+}({})", disp, ea_reg)
             } else {
-                format!("{:+d}({})", disp, ea_reg)
+                format!("{:+}({})", disp, ea_reg)
             };
             (EaFormat::AddressRegisterIndirectWithDisplacement(disp as u16, ea_reg), 4)
         }
@@ -241,13 +242,13 @@ fn parse_ea_mode(data: &[u8], offset: usize, mode_bits: u8, is_register: bool, b
             
             if disp_size == 0 {
                 // No displacement
-                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, "none"), 4)
+                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, "none".to_string()), 4)
             } else if disp_size == 5 || disp_size == 6 {
                 // 8-bit or 16-bit signed displacement
                 let disp = data[offset + 3] as i8;
-                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, &format!("{:+d}", disp)), 4)
+                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, format!("{:+}", disp)), 4)
             } else {
-                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, "none"), 6)
+                (EaFormat::AddressRegisterIndirectWithIndex(idx_size, ea_reg, "none".to_string()), 6)
             }
         }
         6 => {
@@ -295,6 +296,8 @@ fn parse_pc_ea_mode(data: &[u8], offset: usize, mode_bits: u8, base_pc: u32) -> 
             let addr = base_pc + disp;
             (EaFormat::AbsoluteLong(addr), 6)
         }
+        // Unreachable (mode is masked to 0..=7) but keeps the match exhaustive.
+        _ => (EaFormat::ProgramCounterWithDisplacement(0, base_pc), 4),
     }
 }
 
@@ -358,7 +361,7 @@ fn decode_m68k_opcode(opcode: u16, data: &[u8], offset: usize, pc: u32) -> (&'st
         3 => decode_alu_instruction(opcode, data, offset, pc),
         
         // Move to/from SR (1110)
-        4 => decode_move_to_sr_instruction(opcode, data, offset, pc),
+        4 => decode_move_sr_instruction(opcode, data, offset, pc),
         
         // Logical/shift/rotate (1111xxxx xxxx xxxx) - high nibble of first byte
         5..=7 => decode_shift_rotate_instruction(opcode, data, offset, pc),
@@ -382,7 +385,7 @@ fn decode_move_instruction(opcode: u16, data: &[u8], offset: usize, _pc: u32) ->
             if (dst_ea_mode == 7 && src_ea_mode <= 1) || (src_ea_mode == 7 && dst_ea_mode <= 5) {
                 // MOVEQ - Move Quick (8-bit signed immediate)
                 let val = data[offset + 2] as i8;
-                ("moveq", format!("#${:02X}, d{}", val & 0xFF, dst_ea_mode), 2)
+                ("moveq", format!("#${:02X}, d{}", (val as u8), dst_ea_mode), 2)
             } else {
                 // MOVE.B src, dst
                 let src_fmt = parse_ea_mode(data, offset, (src_ea_mode << 3) as u8, src_ea_mode <= 1, _pc);
@@ -539,6 +542,8 @@ fn decode_alu_instruction(opcode: u16, data: &[u8], offset: usize, _pc: u32) -> 
                 _ => ("alu", String::new(), 2),
             }
         }
+        // Unreachable (op_code is masked to 0..=7) but keeps the match exhaustive.
+        _ => ("alu", String::new(), 2),
     }
 }
 
@@ -555,7 +560,7 @@ fn decode_misc_alu_instruction(opcode: u16, data: &[u8], offset: usize, _pc: u32
             let dst_reg = opcode & 0x07;
             
             let src_fmt = parse_ea_mode(data, offset, (src_mode << 3) as u8, false, _pc);
-            ("adda".to_string(), format!("{}, a{}", format_ea(&src_fmt.0), dst_reg), src_fmt.1 + 2)
+            ("adda", format!("{}, a{}", format_ea(&src_fmt.0), dst_reg), src_fmt.1 + 2)
         }
         1 => {
             // SUBA instructions  
@@ -564,7 +569,7 @@ fn decode_misc_alu_instruction(opcode: u16, data: &[u8], offset: usize, _pc: u32
             let dst_reg = opcode & 0x07;
             
             let src_fmt = parse_ea_mode(data, offset, (src_mode << 3) as u8, false, _pc);
-            ("suba".to_string(), format!("{}, a{}", format_ea(&src_fmt.0), dst_reg), src_fmt.1 + 2)
+            ("suba", format!("{}, a{}", format_ea(&src_fmt.0), dst_reg), src_fmt.1 + 2)
         }
         2 => {
             // LINK instruction
@@ -624,7 +629,7 @@ fn decode_jump_branch_instruction(opcode: u16, data: &[u8], offset: usize, pc: u
         
         if opcode & 0xF000 == 0x6000 {
             // BCC (Branch on Condition Code)
-            let cond_name = if cc < CC_NAMES.len() { CC_NAMES[cc] } else { "unknown" };
+            let cond_name = if (cc as usize) < CC_NAMES.len() { CC_NAMES[cc as usize] } else { "unknown" };
             
             // Read displacement from word2
             let disp = read_be_u16(data, offset + 2) as i16;
@@ -652,14 +657,14 @@ fn decode_jump_branch_instruction(opcode: u16, data: &[u8], offset: usize, pc: u
         
         if opcode & 0x00FF == 0x00C7 {
             // JMP (indirect jump via register)
-            ("jmp", format!("({})", ADDR_REG_NAMES[base_reg]), 2)
+            ("jmp", format!("({})", ADDR_REG_NAMES[base_reg as usize]), 2)
         } else if opcode & 0x00FF == 0x0087 || opcode & 0x00FF == 0x00C6 {
             // JSR (jump to subroutine via register)
-            ("jsr", format!("({})", ADDR_REG_NAMES[base_reg]), 2)
+            ("jsr", format!("({})", ADDR_REG_NAMES[base_reg as usize]), 2)
         } else {
             // Check for PC-relative JSR (40xx or 44xx with specific patterns)
             if opcode & 0x00FF == 0x00C7 {
-                ("jsr", format!("({})", ADDR_REG_NAMES[base_reg]), 2)
+                ("jsr", format!("({})", ADDR_REG_NAMES[base_reg as usize]), 2)
             } else {
                 ("jmp", format!("0x{:04X}", opcode), 2)
             }
@@ -860,10 +865,10 @@ fn detect_rom_size(file_size: usize) -> usize {
 fn detect_ram_size(data: &[u8]) -> Option<usize> {
     // Genesis RAM is typically at offset 0x01F0 in header
     if data.len() >= 0x1F4 {
-        let ram_bytes = data[0x1F0..=0x1F3];
+        let ram_bytes = &data[0x1F0..=0x1F3];
         if ram_bytes[0] != 0 || ram_bytes[1] != 0 {
             // RAM size encoded as bits
-            let ram_size_code = (ram_bytes[0] << 8) | ram_bytes[1];
+            let ram_size_code = ((ram_bytes[0] as u16) << 8) | (ram_bytes[1] as u16);
             match ram_size_code {
                 0x0000 => Some(0x0000), // No RAM
                 0x0001 => Some(0x0080), // 128 bytes (SMS)
@@ -954,7 +959,7 @@ fn export_sega_disasm_csv(disasm: &SegaDisassembly) -> Result<String, String> {
     
     for instr in &disasm.instructions {
         // Escape operands for CSV
-        let operands_escaped = disasm.operands.replace('"', "\"\"");
+        let operands_escaped = instr.operands.replace('"', "\"\"");
         csv.push_str(&format!(
             "0x{:08X},{},{},{}\n",
             instr.address, instr.mnemonic, operands_escaped, instr.size
