@@ -140,6 +140,45 @@ pub fn extract_embedded_elf(path: &str) -> Result<Vec<u8>, String> {
     Ok(data[start..].to_vec())
 }
 
+/// Scan a raw disc image for the "PS-X EXE" magic and return its byte offset.
+///
+/// PS1 games ship on CD-ROMs; the bootable executable (a PS-X EXE) is stored as
+/// a file inside the ISO9660 / raw-sector image. We can't mount the filesystem
+/// here, so we locate the embedded executable by scanning for its magic. This
+/// finds the primary boot executable for the vast majority of PS1 disc images.
+pub fn find_psx_exe_offset_in_disc(data: &[u8]) -> Option<usize> {
+    let magic = b"PS-X EXE";
+    if data.len() < magic.len() {
+        return None;
+    }
+    // A PS-X EXE is 2048-byte sector aligned within the image. Scanning every
+    // byte is simplest and correct; cap the search to the first 64 MB to keep
+    // worst-case time bounded on huge images.
+    let limit = data.len().min(64 * 1024 * 1024);
+    data[..limit]
+        .windows(magic.len())
+        .position(|w| w == magic)
+}
+
+/// Extract the embedded ELF executable from a PS1 disc image (.iso/.bin/.img).
+///
+/// Returns the ELF bytes of the bootable game executable. Works by finding the
+/// PS-X EXE inside the disc image and pulling out the ELF that follows it.
+pub fn extract_elf_from_disc_image(path: &str) -> Result<Vec<u8>, String> {
+    let data = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let exe_off = find_psx_exe_offset_in_disc(&data)
+        .ok_or_else(|| "No PS-X EXE found in disc image".to_string())?;
+
+    // Parse the PS-X header at that offset to locate the embedded ELF.
+    let exe = &data[exe_off..];
+    // Reuse the magic-offset scan logic over the EXE to find the ELF magic.
+    let elf_rel = exe
+        .windows(4)
+        .position(|w| w == [0x7F, b'E', b'L', b'F'])
+        .ok_or_else(|| "PS-X EXE present but embedded ELF not located".to_string())?;
+    Ok(exe[elf_rel..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

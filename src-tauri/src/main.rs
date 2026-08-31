@@ -189,8 +189,11 @@ fn log_message(level: String, message: String) -> Result<(), String> {
 fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file()
+        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
         .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
-        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso"])
+        .add_filter("Console Executables", &["xbe", "xex", "self", "rpx", "rpl", "exe"])
+        .add_filter("GameBoy ROMs", &["gb", "gbc", "gba"])
+        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
         .add_filter("All Files", &["*"])
         .pick_file(move |path| {
             if let Some(filepath) = path {
@@ -199,7 +202,9 @@ fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
             }
             tx.send(String::new()).ok();
         });
-    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+    // Block until the user picks or cancels — no artificial timeout. A file
+    // dialog is modal to the app window, so the callback always resolves.
+    match rx.recv() {
         Ok(path) => {
             if path.is_empty() {
                 Err("No file selected".to_string())
@@ -207,7 +212,7 @@ fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
                 Ok(path)
             }
         },
-        Err(_) => Err("Dialog timed out".to_string()),
+        Err(_) => Err("Dialog channel closed".to_string()),
     }
 }
 
@@ -215,8 +220,10 @@ fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
 fn open_multiple_files_dialog(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file()
+        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
         .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
-        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso"])
+        .add_filter("GameBoy ROMs", &["gb", "gbc", "gba"])
+        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
         .add_filter("All Files", &["*"])
         .pick_files(move |paths_opt| {
             if let Some(paths) = paths_opt {
@@ -226,7 +233,7 @@ fn open_multiple_files_dialog(app: tauri::AppHandle) -> Result<Vec<String>, Stri
                 tx.send(Vec::new()).ok();
             }
         });
-    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+    match rx.recv() {
         Ok(paths) => Ok(paths),
         Err(_) => Ok(Vec::new()),
     }
@@ -283,7 +290,8 @@ fn read_raw_binary(path: String, max_bytes: Option<usize>) -> Result<Vec<u8>, St
 }
 
 /// Identify a file by its magic bytes. Returns a short descriptor like
-/// "elf32-le", "elf32-be", "psx-exe", "raw". Helps the UI pick a loader.
+/// "elf32-le", "elf32-be", "psx-exe", "gb-rom", "ps1-disc", "chd", "raw".
+/// Helps the UI pick a loader.
 #[tauri::command]
 fn identify_file(path: String) -> Result<String, String> {
     let p = Path::new(&path);
@@ -291,7 +299,8 @@ fn identify_file(path: String) -> Result<String, String> {
         return Err(format!("File not found: {}", path));
     }
     let mut file = fs::File::open(p).map_err(|e| e.to_string())?;
-    let mut head = [0u8; 8];
+    // Read enough for GB header (0x134+) and the ISO9660 PVD magic (0x8001).
+    let mut head = [0u8; 0x8006];
     use std::io::Read;
     let n = file.read(&mut head).unwrap_or(0);
     let h = &head[..n];
@@ -321,7 +330,27 @@ fn identify_file(path: String) -> Result<String, String> {
     if h.len() >= 4 && &h[0..3] == b"SCE" && h[3] == 0 {
         return Ok("self".into());
     }
-    // Wii U RPX/RPL: BE ELF64 with e_machine==21 — detected by reading more bytes
+    // CHD (MAME compressed hunks — PS1/PS2/etc. disc images): "MComprHD"
+    if h.len() >= 8 && &h[0..8] == b"MComprHD" {
+        return Ok("chd".into());
+    }
+    // GameBoy ROM: fixed Nintendo logo bitmap at 0x104..0x133.
+    if h.len() >= 0x150 {
+        const NINTENDO_LOGO: [u8; 48] = [
+            0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83,
+            0x00, 0x0C, 0x00, 0x0D, 0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+            0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99, 0xBB, 0xBB, 0x67, 0x63,
+            0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+        ];
+        if h[0x104..0x134] == NINTENDO_LOGO {
+            return Ok("gb-rom".into());
+        }
+    }
+    // PlayStation disc image (.iso/.bin/.cue): ISO9660 PVD "CD001" at sector 16.
+    // PS1 games are CD-ROMs; the game executable (PS-X EXE) lives inside.
+    if h.len() > 0x8005 && &h[0x8001..0x8006] == b"CD001" {
+        return Ok("ps1-disc".into());
+    }
     Ok("raw".into())
 }
 
@@ -358,7 +387,14 @@ fn read_u16(data: &[u8], offset: usize, is_little_endian: bool) -> u16 {
 #[tauri::command]
 fn parse_elf_file(path: String) -> Result<ElfFileInfo, String> {
     let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let filename = path.split('/').last().or(path.split('\\').last()).unwrap_or("unknown").to_string();
+    parse_elf_data(&data, &filename)
+}
 
+/// Core ELF32 parser operating on in-memory bytes. Shared by `parse_elf_file`
+/// (path-based Tauri command) and the PS1 disc-image path, which extracts the
+/// embedded executable first and parses that.
+fn parse_elf_data(data: &[u8], filename: &str) -> Result<ElfFileInfo, String> {
     if data.len() < 64 {
         return Err("File too small to be a valid ELF".to_string());
     }
@@ -536,12 +572,10 @@ fn parse_elf_file(path: String) -> Result<ElfFileInfo, String> {
     // Walk section headers for SHT_REL / SHT_RELA and resolve each entry's
     // symbol name. Retail PS2 games usually have none (statically linked);
     // dev/homebrew builds use them to name imports.
-    let relocations = parse_relocations(&data, e_shoff, e_shnum, e_shentsize, is_little_endian);
-
-    let filename = path.split('/').last().or(path.split('\\').last()).unwrap_or("unknown").to_string();
+    let relocations = parse_relocations(data, e_shoff, e_shnum, e_shentsize, is_little_endian);
 
     Ok(ElfFileInfo {
-        filename,
+        filename: filename.to_string(),
         sections,
         symbols,
         entry_point: e_entry,
@@ -1434,16 +1468,18 @@ fn identify_gb_rom(path: String) -> Result<GbIdentification, String> {
         return Ok(GbIdentification { is_gameboy: false, header: None, rom_data: Vec::new() });
     }
 
-    // Check GameBoy signature at 0x0148-0x0149: $00 $FF must both be present.
-    let sig_byte_0 = data[0x148];
-    let sig_byte_1 = data[0x149];
-    if sig_byte_0 != 0x00 || sig_byte_1 != 0xFF {
-        // Also accept the "new style" signature: $00 at 0x014B and $FF at 0x014E.
-        let new_a = data.get(0x14B) == Some(&0x00);
-        let new_b = data.get(0x14E) == Some(&0xFF);
-        if !new_a || !new_b {
-            return Ok(GbIdentification { is_gameboy: false, header: None, rom_data: Vec::new() });
-        }
+    // Reliable GameBoy identification = the fixed Nintendo logo bitmap at
+    // 0x104..0x133 (48 bytes). Every real GB/GBC ROM carries this exact pattern;
+    // the previous 0x148/0x149 check was wrong (those are the ROM/RAM size
+    // bytes, which vary per game and are almost never 0x00/0xFF).
+    const NINTENDO_LOGO: [u8; 48] = [
+        0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83,
+        0x00, 0x0C, 0x00, 0x0D, 0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+        0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99, 0xBB, 0xBB, 0x67, 0x63,
+        0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
+    ];
+    if data[0x104..0x134] != NINTENDO_LOGO {
+        return Ok(GbIdentification { is_gameboy: false, header: None, rom_data: Vec::new() });
     }
 
     // Parse the ROM header (all fields per GB spec).

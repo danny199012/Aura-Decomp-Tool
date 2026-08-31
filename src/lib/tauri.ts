@@ -51,12 +51,13 @@ export async function call<T>(command: string, args?: Record<string, unknown>): 
 export const isBackendAvailable = () =>
   (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== undefined;
 
-/** Open the native file picker (open_file_dialog) and return a path, or '' if cancelled. */
+/** Open the native file picker (open_file_dialog) and return a path, or '' if cancelled/errored. */
 export async function openFileDialog(): Promise<string> {
   try {
     return await call<string>('open_file_dialog', {});
-  } catch (e) {
-    return String(e);
+  } catch {
+    // Cancelled or dialog unavailable — treat as "no selection", never as a path.
+    return '';
   }
 }
 
@@ -126,11 +127,16 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
   } else if (identify === 'self') {
     candidates.push(() => buildPs3(path));
     candidates.push(() => buildPs4Ps5(path));
-  } else if (identify === 'psx-exe') {
+  } else if (identify === 'psx-exe' || identify === 'ps1-disc') {
+    // PS1 executable or PS1 disc image (analysis extracts the embedded EXE).
     candidates.push(() => buildPs1(path));
     candidates.push(() => buildElf(path));
+  } else if (identify === 'gb-rom') {
+    candidates.push(() => buildGameboy(path));
+  } else if (identify === 'chd') {
+    throw new Error('CHD is a compressed disc image. Convert to .iso/.bin first, then open the resulting image.');
   } else {
-    // raw / unknown magic — Wii U, PS3, PS4/5, ELF or GameBoy ROM.
+    // raw / unknown magic — try the console parsers in turn.
     candidates.push(() => buildWiiU(path));
     candidates.push(() => buildPs4Ps5(path));
     candidates.push(() => buildPs3(path));
@@ -160,7 +166,23 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
       errors.push(String(e));
     }
   }
-  throw new Error(errors[0] || 'No parser could read this file');
+  // Show the most informative error, not just the first parser that ran.
+  const best = errors
+    .slice()
+    .sort((a, b) => scoreError(b) - scoreError(a))[0];
+  throw new Error(
+    `Could not identify this file (detected: ${identify}). ${best ?? 'No parser could read it.'}`,
+  );
+}
+
+/// Rank parser errors so the most meaningful one (a real "not this format"
+/// message) is shown over a generic parse failure.
+function scoreError(msg: string): number {
+  let s = 0;
+  if (/not a|expected|magic/i.test(msg)) s += 2;
+  if (/wii u|ps3|ps4|ps5|xbe|xex|self|elf/i.test(msg)) s += 1;
+  if (/too small/i.test(msg)) s -= 1;
+  return s;
 }
 
 async function buildElf(path: string): Promise<Partial<BinarySummary>> {

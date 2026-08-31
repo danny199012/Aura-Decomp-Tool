@@ -28,7 +28,9 @@ export default function ThemeSwitcher() {
         <span className="text-fg-muted">▾</span>
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-2 w-56 overflow-hidden rounded-lg border border-app-border bg-app-panel shadow-xl">
+        // Opens downward — the switcher lives in the top header, so opening
+        // upward would clip the menu above the window's top edge.
+        <div className="absolute right-0 top-full z-20 mt-2 w-56 overflow-hidden rounded-lg border border-app-border bg-app-panel shadow-xl">
           {THEMES.map((t) => (
             <button
               key={t.id}
@@ -39,6 +41,7 @@ export default function ThemeSwitcher() {
             >
               <span className="h-3 w-3 rounded-full" style={{ backgroundColor: t.swatch }} />
               <span className="flex-1 font-medium text-fg">{t.label}</span>
+              <span className="text-[10px] text-fg-muted">{t.hint}</span>
             </button>
           ))}
         </div>

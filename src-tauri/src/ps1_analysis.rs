@@ -369,12 +369,26 @@ fn estimate_table_entries(offset: i32) -> u32 {
 // Tauri command
 // ---------------------------------------------------------------------------
 
-use crate::{ElfFileInfo, ElfSection};
+use crate::{ps1_exe, ElfFileInfo, ElfSection};
+use std::path::Path;
 
-/// Analyze a PS1 ELF binary and return structured heuristic results.
+/// Analyze a PS1 binary and return structured heuristic results.
+///
+/// Accepts a plain ELF, a PS-X EXE, or a raw PS1 disc image (.iso/.bin/.img).
+/// Disc images store the bootable executable (a PS-X EXE wrapping an ELF) in
+/// the CD-ROM filesystem; we locate and extract it, then analyze the ELF.
 #[tauri::command]
 pub fn analyze_ps1_binary(path: String) -> Result<Ps1AnalysisResult, String> {
-    let info = crate::parse_elf_file(path)?;
+    let info = crate::parse_elf_file(path.clone()).or_else(|_| {
+        // Not a bare ELF — try a PS1 disc image: find the embedded PS-X EXE and
+        // parse the ELF inside it.
+        let elf = ps1_exe::extract_elf_from_disc_image(&path)?;
+        let filename = Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        crate::parse_elf_data(&elf, &filename)
+    })?;
 
     // Partition sections by role.
     let mut rodata_sections: Vec<&ElfSection> = Vec::new();
