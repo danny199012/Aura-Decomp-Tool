@@ -30,7 +30,7 @@ pub struct EnhancedCallGraphResult {
 
 /// Analyze a set of detected functions to build an enhanced call graph.
 pub fn analyze_call_graph(
-    _functions: &[(u32, Option<String>)],
+    functions: &[(u32, Option<String>)],
 ) -> EnhancedCallGraphResult {
     // Placeholder implementation — will be expanded with real cross-reference analysis.
     let nodes: Vec<EnhancedCallGraphNode> = functions

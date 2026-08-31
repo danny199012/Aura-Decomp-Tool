@@ -1781,5 +1781,4 @@ mod tests {
         assert_eq!(lines[0].mnemonic, "bgezal");
     }
 
-    #[test]
-    fn
+}

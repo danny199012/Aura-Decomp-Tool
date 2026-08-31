@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+ * Aura theme system
+ * ----------------------------------------------------------------------------
+ * The `<html data-theme="...">` attribute is injected by index.html (before
+ * styles load, so first paint is correct). Valid values:
+ *   midnight | aurora | synthwave | carbon
+ *
+ * Each theme defines RGB triplets (space-separated "R G B") that Tailwind's
+ * semantic color tokens resolve to via:
+ *   rgb(var(--app-base) / <alpha-value>)
+ *
+ * This keeps opacity modifiers (/50, /30, /10) working for every theme.
+ * ========================================================================== */
+
+/* ---- Midnight (default) — deep slate + indigo ------------------------- */
+:root,
+html[data-theme='midnight'] {
+  --app-base: 13 17 28;            /* page background        */
+  --app-panel: 22 28 45;           /* main panels            */
+  --app-panel-soft: 30 38 58;      /* nested panels / hex dyn*/
+  --app-hover: 44 54 78;           /* hover backgrounds      */
+  --app-hover-strong: 60 72 100;   /* active / selected      */
+  --app-border: 38 48 72;          /* hairline borders       */
+  --app-border-strong: 56 68 98;   /* emphasised borders     */
+
+  --fg: 226 232 240;               /* primary text           */
+  --fg-secondary: 183 192 211;
+  --fg-muted: 132 142 168;
+  --fg-faint: 96 106 132;
+
+  --accent: 99 102 241;            /* indigo-500             */
+  --accent-bright: 129 140 248;
+  --accent-strong: 79 70 229;
+
+  --hex-column: 30 38 58;          /* hex dump highlight     */
+}
+
+/* ---- Aurora — emerald / teal ------------------------------------------ */
+html[data-theme='aurora'] {
+  --app-base: 5 22 19;
+  --app-panel: 9 34 29;
+  --app-panel-soft: 13 45 39;
+  --app-hover: 19 60 51;
+  --app-hover-strong: 25 76 64;
+  --app-border: 22 60 50;
+  --app-border-strong: 34 92 76;
+
+  --fg: 210 240 235;
+  --fg-secondary: 161 200 195;
+  --fg-muted: 114 155 149;
+  --fg-faint: 80 112 108;
+
+  --accent: 16 185 129;
+  --accent-bright: 52 211 153;
+  --accent-strong: 5 150 105;
+
+  --hex-column: 9 42 36;
+}
+
+/* ---- Synthwave — neon purple / pink ----------------------------------- */
+html[data-theme='synthwave'] {
+  --app-base: 22 13 40;
+  --app-panel: 33 21 58;
+  --app-panel-soft: 44 30 74;
+  --app-hover: 60 40 96;
+  --app-hover-strong: 76 52 118;
+  --app-border: 55 39 88;
+  --app-border-strong: 82 60 122;
+
+  --fg: 233 225 246;
+  --fg-secondary: 197 181 222;
+  --fg-muted: 150 130 182;
+  --fg-faint: 108 92 140;
+
+  --accent: 217 70 239;
+  --accent-bright: 232 121 249;
+  --accent-strong: 192 38 211;
+
+  --hex-column: 38 26 64;
+}
+
+/* ---- Carbon — clean, professional light ------------------------------- */
+html[data-theme='carbon'] {
+  --app-base: 250 250 252;
+  --app-panel: 255 255 255;
+  --app-panel-soft: 244 244 246;
+  --app-hover: 241 241 244;
+  --app-hover-strong: 228 228 232;
+  --app-border: 213 213 220;
+  --app-border-strong: 179 179 190;
+
+  --fg: 24 24 27;
+  --fg-secondary: 63 63 70;
+  --fg-muted: 113 113 122;
+  --fg-faint: 161 161 170;
+
+  --accent: 79 70 229;
+  --accent-bright: 99 102 241;
+  --accent-strong: 67 56 202;
+
+  --hex-column: 244 244 246;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-app-base text-fg antialiased;
+    font-feature-settings: 'tnum' 1, 'cv02' 1;
+  }
+
+  /* Custom scrollbars that follow the theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--app-border-strong)) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: rgb(var(--app-border-strong));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* Pre-wrap for disassembly / text listings. */
+  .text-listing {
+    white-space: pre;
+    font-family: theme('fontFamily.mono');
+  }
+}

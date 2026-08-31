@@ -56,11 +56,12 @@ pub fn generate_recomp_config(
         })
         .collect();
 
+    let function_count = func_entries.len();
     RecompConfig {
         binary_name: binary_name.to_string(),
         sections: section_infos,
         functions: func_entries,
-        function_count: func_entries.len(),
+        function_count,
     }
 }
 

@@ -145,25 +145,97 @@ npm run tauri dev
 npm run dev
 ```
 
+> The UI talks to the backend exclusively through Tauri `invoke` commands, so
+> most features need the desktop shell (`npm run tauri dev`). A plain-browser
+> `npm run dev` renders the layout + theme but shows a friendly
+> "backend unavailable" state until the shell hosts it.
+
+### Verify the backend without a webview
+
+The Tauri crate can't be compiled in CI/sandboxes (no GTK/WebKit). Use the
+standalone harness in [`/tmp/xcheck`] to type-check the backend modules and run
+their smoke tests with a fake `#[tauri::command]` proc-macro:
+
+```bash
+cd /tmp/xcheck && cargo run && cargo test
+```
+
+The full `tauri build` (webview bundling) must be run on a real desktop machine.
+
+---
+
+## User Interface Overview
+
+Aura ships as a single-page React 18 + TypeScript + Tailwind app with a sidebar
+that drives seven views:
+
+| View | What it does | Main backend commands |
+|------|---------------|-----------------------|
+| **Home / Open** | Open a file (native dialog or path), list supported formats, auto-identify the container and route it to the right parser. | `open_file_dialog`, `open_file`, `identify_file`, `get_supported_formats` |
+| **Binary info** | File type / magic, endianness, entry point, and the full section table with address + size + code/data role. | `parse_elf_file`, `parse_xbe_file`, `parse_xex_file`, `parse_wiiu_file`, `parse_ps3_file`, `parse_ps4ps5_file`, `identify_gb_rom` |
+| **Disassembly** | Pick a code section and disassemble it — big-endian PPC (Xbox 360/Wii U/PS3), 32/64-bit x86 (Xbox/PS4/PS5), MIPS (PS1/PS2) or Z80 (GameBoy). Also lists detected functions. | `disassemble_xex`, `disassemble_wiiu_section`, `disassemble_ps3_section`, `disassemble_ps4ps5_section`, `disassemble_xbe`, `disassemble_section`, `disassemble_gb_rom`, `detect_functions`, `read_raw_binary` |
+| **Call graph** | Interactive D3.js force-directed graph of detected functions, colored by library, with click-through callers/callees, hub ranking and stats. | `get_interactive_call_graph`, `get_call_graph` |
+| **SDK scan** | Match binary import names against the 346-entry cross-platform SDK database (auto-naming + library attribution) with a per-platform DB coverage overview. | `scan_sdk_symbols`, `get_sdk_db_stats` |
+| **Export project** | One-click decomp project export (config.toml, functions.csv, symbol_addrs.txt, undefined_syms.txt, splat.yaml, Makefile, README) plus a ps2recomp config bundle. | `export_decomp_project`, `generate_config_toml`, `pick_output_folder` |
+| **PS1 analysis** | String extraction, LUI+ORI constant pools, interrupt-handler & state-machine heuristics, PS1 SDK symbol references, enhanced call graph and recomp config. | `analyze_ps1_binary`, `scan_ps1_symbols`, `get_enhanced_call_graph`, `generate_ps1_recomp_config` |
+
+Every view is reachable from the sidebar and, when applicable, is pre-populated
+with the currently loaded file. The call graph view is ELF-backed (PS1/PS2);
+the other platforms show a note until that backend path is extended.
+
+### Theming
+
+The window honours the `<html data-theme>` attribute with four themes —
+**Midnight** (default), **Aurora**, **Synthwave** and **Carbon**. Use the
+switcher in the top-right; the choice persists in `localStorage` and is applied
+before first paint (no flash).
+
 ---
 
 ## Project Structure
 
 ```
 Aura-Decomp-Tool/
-├── src/                      # React frontend
-│   ├── App.tsx               # Main application component (UI, disassembly, state management)
-│   └── index.css             # Theme CSS variables and Tailwind directives
+├── src/                      # React frontend (single-page app)
+│   ├── main.tsx              # React entry point
+│   ├── App.tsx               # App shell: sidebar + header + theme switcher + view router
+│   ├── index.css             # Theme CSS variables + Tailwind directives
+│   ├── types.ts              # Typings mirroring every backend command return
+│   ├── lib/
+│   │   ├── tauri.ts          # invoke wrapper + binary probe/router + disasm dispatch
+│   │   ├── themes.ts         # data-theme switcher (midnight/aurora/synthwave/carbon)
+│   │   ├── format.ts         # hex/byte formatting helpers
+│   │   └── FileContext.ts    # React context holding the currently-loaded binary
+│   └── components/
+│       ├── Sidebar.tsx       # navigation (7 views)
+│       ├── ThemeSwitcher.tsx # theme picker
+│       ├── ui.tsx            # shared Panel/Button/Stat/Spinner primitives
+│       ├── HomeView.tsx      # file open + supported formats
+│       ├── BinaryView.tsx    # summary + section table
+│       ├── DisasmView.tsx    # code-section disassembly + detected functions
+│       ├── CallGraphView.tsx # D3.js force-directed call graph + node detail
+│       ├── callgraph/ForceGraph.tsx
+│       ├── SdkScanView.tsx   # SDK symbol scan + DB coverage
+│       ├── ExportView.tsx    # decomp project + ps2recomp config export
+│       └── Ps1View.tsx       # PS1 analysis + symbols + enhanced graph
 ├── src-tauri/                # Rust backend
 │   ├── src/
-│   │   ├── main.rs           # Tauri commands: ELF parsing, function detection, call graph, config export
-│   │   └── sce_symbol_scanner.rs  # SCE SDK symbol matcher (trie + SHA-1 pipeline)
-│   ├── resources/sce_sdk/    # Embedded symbol database (symbols.json + tree.json)
+│   │   ├── main.rs           # Tauri commands + generate_handler register
+│   │   ├── lzx.rs            # pure-Rust LZX decompressor (Xbox 360 XEX)
+│   │   ├── xbox.rs           # Original Xbox XBE parser + 32-bit x86 disasm
+│   │   ├── xbox360.rs        # Xbox 360 XEX parser + BE PPC disasm
+│   │   ├── wiiu.rs           # Wii U RPX/RPL parser (PPC64)
+│   │   ├── ps3.rs            # PS3 SELF/ELF parser (PPC)
+│   │   ├── ps4ps5.rs         # PS4/PS5 SELF/ELF parser (x86-64)
+│   │   ├── sdk_symbols.rs    # 346-entry cross-platform SDK symbol DB
+│   │   ├── decomp_export.rs  # one-click decomp project export
+│   │   ├── call_graph.rs     # D3.js-ready interactive call graph
+│   │   └── ppc_disasm.rs     # shared big/little-endian PowerPC decoder
 │   ├── Cargo.toml            # Rust dependencies
 │   └── tauri.conf.json       # Tauri app configuration
-├── scripts/                  # Build/utility scripts
+├── docs/
 ├── build.bat                 # Windows one-click build script
-└── package.json              # Node.js project manifest
+└── package.json              # Node.js project manifest (React + vite + tailwind + d3)
 ```
 
 ---

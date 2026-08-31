@@ -91,7 +91,7 @@ pub struct SectionView<'a> {
 }
 
 impl<'a> SectionView<'a> {
-    fn new(name: &str, data: &'a [u8]) -> Self {
+    fn new(name: &'a str, data: &'a [u8]) -> Self {
         SectionView { name, data }
     }
 }
@@ -426,6 +426,6 @@ fn is_code_like(s: &ElfSection) -> bool {
 
 // Keep the `SectionView` helper referenced (used by future extensions).
 #[allow(dead_code)]
-fn _section_view_keepalive<'a>(name: &str, data: &'a [u8]) -> SectionView<'a> {
+fn _section_view_keepalive<'a>(name: &'a str, data: &'a [u8]) -> SectionView<'a> {
     SectionView::new(name, data)
 }
