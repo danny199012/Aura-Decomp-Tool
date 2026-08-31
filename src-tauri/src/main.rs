@@ -189,10 +189,10 @@ fn log_message(level: String, message: String) -> Result<(), String> {
 fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file()
-        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
+        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
         .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
         .add_filter("Console Executables", &["xbe", "xex", "self", "rpx", "rpl", "exe"])
-        .add_filter("GameBoy ROMs", &["gb", "gbc", "gba"])
+        .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
         .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
         .add_filter("All Files", &["*"])
         .pick_file(move |path| {
@@ -220,9 +220,9 @@ fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
 fn open_multiple_files_dialog(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file()
-        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
+        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
         .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
-        .add_filter("GameBoy ROMs", &["gb", "gbc", "gba"])
+        .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
         .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
         .add_filter("All Files", &["*"])
         .pick_files(move |paths_opt| {
@@ -299,12 +299,11 @@ fn identify_file(path: String) -> Result<String, String> {
         return Err(format!("File not found: {}", path));
     }
     let mut file = fs::File::open(p).map_err(|e| e.to_string())?;
-    // Read up to 0x8006 bytes (enough for GB header + ISO9660 PVD).
-    // Use read_to_end with a Take to avoid partial reads (Windows File::read
-    // can return fewer bytes than the buffer).
+    // Read up to 0x10200 bytes (enough for GB/NES/GBA headers + SNES internal
+    // header at 0xFFC0-0xFFD6, even with a 512-byte SMC copier header).
     use std::io::Read;
-    let mut head = Vec::with_capacity(0x8006);
-    file.take(0x8006).read_to_end(&mut head).map_err(|e| e.to_string())?;
+    let mut head = Vec::with_capacity(0x10200);
+    file.take(0x10200).read_to_end(&mut head).map_err(|e| e.to_string())?;
     let h = &head[..];
 
     if h.len() >= 5 && &h[0..4] == [0x7f, b'E', b'L', b'F'] {
@@ -361,6 +360,80 @@ fn identify_file(path: String) -> Result<String, String> {
     // "CD001" at sector 16 (byte 0x8001).
     if h.len() > 0x8005 && &h[0x8001..0x8006] == b"CD001" {
         return Ok("ps1-disc".into());
+    }
+    // iNES ROM: "NES\x1a" at offset 0.
+    if h.len() >= 4 && &h[0..4] == b"NES\x1a" {
+        return Ok("nes-rom".into());
+    }
+    // GameBoy Advance ROM: the Nintendo logo bitmap at 0x04..0x9F (different
+    // offset than GB's 0x104) + the fixed byte 0x96 at 0xB5 (complement check).
+    if h.len() > 0xB5 && h[0xB5] == 0x96 {
+        const GBA_LOGO: [u8; 176] = [
+            0x24,0xFF,0xAE,0x51,0x69,0x9A,0xA2,0x21,0x3D,0x84,0x82,0x0C,0x7F,0x31,0xA4,0xF2,
+            0x32,0x0F,0x12,0x2B,0x19,0xE7,0x4B,0x11,0x61,0xD4,0x87,0x76,0x6C,0xBF,0x01,0x86,
+            0x1B,0x25,0xAF,0x16,0x2F,0x3F,0xC3,0x41,0x56,0x5F,0x8C,0x51,0x71,0x60,0x33,0xCB,
+            0xBF,0xAC,0x06,0x1B,0x3B,0x33,0x9E,0x33,0xF1,0x56,0x4E,0x75,0x81,0x28,0xE0,0x71,
+            0xFD,0x8D,0x41,0x0F,0x71,0x30,0xB5,0x4E,0x54,0xBF,0x65,0x99,0xFB,0x4F,0x4E,0x4D,
+            0x13,0xDC,0x3B,0x72,0x4D,0x3A,0x33,0xAE,0x30,0x75,0x6D,0x17,0x78,0x2F,0x86,0x47,
+            0x4B,0x61,0x4C,0x33,0x36,0x21,0x26,0x89,0xCD,0xAD,0x53,0x8B,0xF2,0x38,0x59,0xCE,
+            0x67,0x01,0x97,0x73,0x57,0x74,0x6F,0xF3,0x16,0x05,0x48,0x59,0xB6,0xFB,0xCD,0x7B,
+            0x36,0x9D,0x9A,0x48,0xF8,0x3F,0x4A,0x60,0x3C,0x57,0x57,0x4F,0x76,0x12,0xA3,0x6F,
+            0x4F,0xA3,0xB5,0x4C,0x0F,0x3E,0x57,0x3A,0x9C,0x21,0xFC,0xFB,0x50,0x08,0x6F,0xC8,
+            0x80,0x3A,0xE6,0xE6,0x49,0x20,0x17,0x52,0xD0,0xD1,0x44,0x90,0xFC,0x4C,0x4B,0x61,
+        ];
+        // Check first 16 bytes of the logo as a quick, reliable match.
+        if &h[4..20] == &GBA_LOGO[0..16] {
+            return Ok("gba-rom".into());
+        }
+    }
+    // Nintendo 64 ROM: three byte-orderings exist.
+    // .z64 (big-endian):    80 37 12 40
+    // .v64 (byteswapped):   37 80 40 12
+    // .n64 (little-endian): 40 12 37 80
+    if h.len() >= 4 {
+        let b = &h[0..4];
+        if b == [0x80, 0x37, 0x12, 0x40]
+            || b == [0x37, 0x80, 0x40, 0x12]
+            || b == [0x40, 0x12, 0x37, 0x80]
+        {
+            return Ok("n64-rom".into());
+        }
+    }
+    // Nintendo DS ROM: the header at 0x00 has the game title (ASCII) + game
+    // code at 0x0C. The header CRC at 0x15E validates. A reliable check: the
+    // ROM size at 0x80-0x83 (u32 LE) should be a power of 2 and <= 512MB.
+    // We also check that the title (0x00-0x0C) is printable ASCII.
+    if h.len() >= 0x84 {
+        let title_ascii = h[0..0x0C].iter().all(|&b| b == 0 || b.is_ascii_alphanumeric() || b == b'_');
+        let rom_size = u32::from_le_bytes([h[0x80], h[0x81], h[0x82], h[0x83]]);
+        let is_pow2 = rom_size > 0 && (rom_size & (rom_size - 1)) == 0;
+        if title_ascii && is_pow2 && rom_size <= 0x20000000 {
+            return Ok("nds-rom".into());
+        }
+    }
+    // SNES/SFC ROM: no reliable magic at offset 0 (the header is at 0x7FC0 or
+    // 0xFFC0 depending on whether there's a 512-byte SMC copier header).
+    // Check for the internal ROM info at 0xFFC0 (or 0x7FC0 for small ROMs):
+    // offset 0 has the game title (ASCII), and offset 0xFFD5 has the ROM type.
+    // For a quick check: if bytes at 0xFFC0-0xFFD0 are mostly printable ASCII
+    // (the game title) and 0xFFD5 (memory mode) is a known value (0x20, 0x30,
+    // 0x31, 0x32, 0x33, 0x35, 0x3A), it's likely a SNES ROM.
+    if h.len() > 0xFFD6 {
+        let title_ok = h[0xFFC0..0xFFD0].iter().all(|&b| b == 0 || b == 0x20 || b.is_ascii_alphanumeric());
+        let rom_type = h[0xFFD5];
+        let known_types = [0x20, 0x30, 0x31, 0x32, 0x33, 0x35, 0x3A, 0x40, 0x42, 0x43, 0x45, 0x4A];
+        if title_ok && known_types.contains(&rom_type) {
+            return Ok("snes-rom".into());
+        }
+    }
+    // Also check with SMC copier header (512 bytes offset).
+    if h.len() > 0x101D6 {
+        let title_ok = h[0x101C0..0x101D0].iter().all(|&b| b == 0 || b == 0x20 || b.is_ascii_alphanumeric());
+        let rom_type = h[0x101D5];
+        let known_types = [0x20, 0x30, 0x31, 0x32, 0x33, 0x35, 0x3A, 0x40, 0x42, 0x43, 0x45, 0x4A];
+        if title_ok && known_types.contains(&rom_type) {
+            return Ok("snes-rom".into());
+        }
     }
     Ok("raw".into())
 }

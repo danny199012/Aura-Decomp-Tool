@@ -128,23 +128,18 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
     candidates.push(() => buildPs3(path));
     candidates.push(() => buildPs4Ps5(path));
   } else if (identify === 'psx-exe' || identify === 'ps1-disc') {
-    // PS1 executable or PS1 disc image (analysis extracts the embedded EXE).
     candidates.push(() => buildPs1(path));
     candidates.push(() => buildElf(path));
-  } else if (identify === 'gb-rom') {
-    candidates.push(() => buildGameboy(path));
+  } else if (identify === 'gb-rom' || identify === 'gba-rom' || identify === 'nes-rom' || identify === 'n64-rom' || identify === 'nds-rom' || identify === 'snes-rom') {
+    candidates.push(() => buildRetroRom(path, identify));
   } else if (identify === 'chd') {
     throw new Error('CHD is a compressed disc image. Convert to .iso/.bin first, then open the resulting image.');
   } else {
-    // raw / unknown — try the most likely parsers first. PS1 disc analysis is
-    // tried first because it handles .bin/.iso disc images (which may not
-    // have a recognizable magic at byte 0 due to CD-ROM pregaps or 2352-byte
-    // sector headers). Wii U is tried LAST so its error isn't the one shown.
-    candidates.push(() => buildPs1(path));
+    // raw / unknown — try console parsers. Wii U is LAST so its error isn't shown.
     candidates.push(() => buildElf(path));
     candidates.push(() => buildPs4Ps5(path));
     candidates.push(() => buildPs3(path));
-    candidates.push(() => buildGameboy(path));
+    candidates.push(() => buildRetroRom(path, identify));
     candidates.push(() => buildWiiU(path));
   }
 
@@ -217,12 +212,8 @@ async function buildElf(path: string): Promise<Partial<BinarySummary>> {
 }
 
 async function buildPs1(path: string): Promise<Partial<BinarySummary>> {
-  // Verify this is actually a PS1 binary by running the analysis command.
-  // analyze_ps1_binary handles bare ELF, PS-X EXE, and raw disc images
-  // (.bin/.iso with 2352-byte sectors — it reconstructs the data stream and
-  // extracts the embedded PS-X EXE/ELF). If it fails, this isn't PS1 → throw
-  // so the router tries the next candidate.
-  await call('analyze_ps1_binary', { path });
+  // The PS1 Analysis view calls analyze_ps1_binary, which handles bare ELF,
+  // PS-X EXE, and disc images. Here we just provide a routing summary.
   return {
     kind: 'ps1',
     platform: 'PlayStation 1',
@@ -352,33 +343,65 @@ async function buildPs4Ps5(path: string): Promise<Partial<BinarySummary>> {
   };
 }
 
-async function buildGameboy(path: string): Promise<Partial<BinarySummary>> {
-  interface GbId {
-    is_gameboy: boolean;
-    header: {
-      title: string; manufacturer_code: string; cgb_flag: number; mode: string;
-      sgb_flag: number; version: number; rom_size: number; ram_size: number; destination: number;
-    } | null;
+async function buildRetroRom(path: string, identify: string): Promise<Partial<BinarySummary>> {
+  // For GameBoy/GBC, use the dedicated identify_gb_rom command which returns
+  // header metadata. For other retro ROMs (NES/SNES/N64/GBA/NDS), build a
+  // summary from the identify type — the file dialog already identified it.
+  if (identify === 'gb-rom') {
+    try {
+      interface GbId {
+        is_gameboy: boolean;
+        header: {
+          title: string; manufacturer_code: string; cgb_flag: number; mode: string;
+          sgb_flag: number; version: number; rom_size: number; ram_size: number; destination: number;
+        } | null;
+      }
+      const gb = await call<GbId>('identify_gb_rom', { path });
+      if (!gb.is_gameboy || !gb.header) throw new Error('Not a GameBoy ROM');
+      const h = gb.header;
+      return {
+        kind: 'gameboy' as BinaryKind,
+        platform: `GameBoy${h.cgb_flag ? ' Color' : ''} (${h.mode.toUpperCase()})`,
+        filename: path,
+        entryPoint: 0,
+        littleEndian: false,
+        sections: [],
+        codeSections: [],
+        meta: {
+          title: h.title,
+          'manufacturer code': h.manufacturer_code,
+          'rom size (KB)': h.rom_size,
+          'ram size (KB)': h.ram_size,
+          version: h.version,
+        },
+        raw: gb,
+      };
+    } catch (e) { throw e; }
   }
-  const gb = await call<GbId>('identify_gb_rom', { path });
-  if (!gb.is_gameboy || !gb.header) throw new Error('Not a GameBoy ROM');
-  const h = gb.header;
+  // NES / SNES / N64 / GBA / NDS — basic identification summary.
+  const platforms: Record<string, string> = {
+    'nes-rom': 'Nintendo (NES)',
+    'snes-rom': 'Super Nintendo (SNES)',
+    'n64-rom': 'Nintendo 64',
+    'gba-rom': 'GameBoy Advance',
+    'nds-rom': 'Nintendo DS',
+  };
+  const platform = platforms[identify] ?? `Retro ROM (${identify})`;
+  // For GB/GBC/GBC-disguised-as-gb, we already handled above. For other
+  // retro ROMs, the identify_gb_rom call would return is_gameboy=false, but
+  // that doesn't mean we can't show a summary.
   return {
-    kind: 'gameboy',
-    platform: `GameBoy${h.cgb_flag ? ' Color' : ''} (${h.mode.toUpperCase()})`,
+    kind: 'gameboy' as BinaryKind, // reuse the 'gameboy' kind for the retro ROM summary path
+    platform,
     filename: path,
     entryPoint: 0,
     littleEndian: false,
     sections: [],
     codeSections: [],
     meta: {
-      title: h.title,
-      'manufacturer code': h.manufacturer_code,
-      'rom size (KB)': h.rom_size,
-      'ram size (KB)': h.ram_size,
-      version: h.version,
+      format: identify,
+      hint: 'ROM loaded — use the Disassembly view for raw hex/byte view',
     },
-    raw: gb,
   };
 }
 
