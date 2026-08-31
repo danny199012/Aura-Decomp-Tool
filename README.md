@@ -85,6 +85,12 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **splat-compatible** — The `splat.yaml` output is structured for use with the popular [splat](https://github.com/ethteck/splat) segment splitter, with per-function subsegments in code sections.
 - **Tauri command** — `export_decomp_project(path, platform, output_dir)` writes all files and returns a summary with function counts and named/SDK-matched statistics.
 
+### Interactive Call Graph
+- **D3.js-ready data** — Produces a JSON-serializable graph (nodes + edges) optimized for force-directed visualization in the web UI. Each node carries function name, address, size, library attribution, call count, called-by count, and entry-point/external flags. Each edge carries source/target IDs, callsite address, and call kind (jal/jump).
+- **Graph statistics** — Includes summary stats: total/named/external function counts, total edges, max call depth (BFS from entry point), detected libraries, and top-20 hub functions (ranked by call + called-by score).
+- **SDK integration** — Nodes with SDK-matched names carry their library attribution (e.g. `vpad`, `libc`, `coreinit`), enabling library-colored rendering in the frontend.
+- **Tauri command** — `get_interactive_call_graph(path)` returns the complete graph structure for D3.js rendering.
+
 ---
 
 ## Tech Stack

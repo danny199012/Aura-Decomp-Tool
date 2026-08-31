@@ -10,6 +10,7 @@ mod ps1_symbols;
 mod sce_symbol_scanner;
 // Multi-platform backends: shared PowerPC decoder plus Xbox/360/GameCube/Genesis.
 mod gamecube;
+mod call_graph;
 mod decomp_export;
 mod lzx;
 mod ppc_disasm;
@@ -2154,6 +2155,43 @@ fn export_decomp_project(
     ))
 }
 
+/// Get the interactive call graph for a binary, ready for D3.js rendering.
+/// This is the data structure the web frontend renders as a force-directed
+/// graph — the feature that makes Aura's call graph interactive vs Ghidra's
+/// static tree.
+#[tauri::command]
+fn get_interactive_call_graph(path: String) -> Result<call_graph::InteractiveCallGraph, String> {
+    let info = parse_elf_file(path.clone())?;
+    let funcs = detect_functions_inner(&info)?;
+    let graph = get_call_graph(path)?;
+
+    // Convert to the interactive graph format
+    let functions: Vec<(u64, String, usize, bool)> = funcs
+        .iter()
+        .map(|f| (f.start as u64, f.name.clone(), f.size as usize, !f.name.starts_with("sub_")))
+        .collect();
+
+    let edges: Vec<(u64, u64, u64, String)> = graph
+        .edges
+        .iter()
+        .map(|e| (e.from as u64, e.to as u64, e.callsite as u64, format!("{:?}", e.kind).to_lowercase()))
+        .collect();
+
+    // Build SDK matches from named functions
+    let sdk_matches: Vec<(String, String)> = funcs
+        .iter()
+        .filter(|f| !f.name.starts_with("sub_"))
+        .map(|f| (f.name.clone(), "sdk".to_string()))
+        .collect();
+
+    Ok(call_graph::build_interactive_graph(
+        &functions,
+        &edges,
+        info.entry_point as u64,
+        &sdk_matches,
+    ))
+}
+
 #[tauri::command]
 fn get_supported_formats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
@@ -2244,6 +2282,7 @@ async fn main() {
             scan_sdk_symbols,
             get_sdk_db_stats,
             export_decomp_project,
+            get_interactive_call_graph,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");
