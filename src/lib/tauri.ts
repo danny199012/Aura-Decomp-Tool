@@ -136,12 +136,16 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
   } else if (identify === 'chd') {
     throw new Error('CHD is a compressed disc image. Convert to .iso/.bin first, then open the resulting image.');
   } else {
-    // raw / unknown magic — try the console parsers in turn.
-    candidates.push(() => buildWiiU(path));
+    // raw / unknown — try the most likely parsers first. PS1 disc analysis is
+    // tried first because it handles .bin/.iso disc images (which may not
+    // have a recognizable magic at byte 0 due to CD-ROM pregaps or 2352-byte
+    // sector headers). Wii U is tried LAST so its error isn't the one shown.
+    candidates.push(() => buildPs1(path));
+    candidates.push(() => buildElf(path));
     candidates.push(() => buildPs4Ps5(path));
     candidates.push(() => buildPs3(path));
-    candidates.push(() => buildElf(path));
     candidates.push(() => buildGameboy(path));
+    candidates.push(() => buildWiiU(path));
   }
 
   const errors: string[] = [];
@@ -170,18 +174,24 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
   const best = errors
     .slice()
     .sort((a, b) => scoreError(b) - scoreError(a))[0];
+  // If all errors are "not this format" messages, show a clear summary instead
+  // of a single misleading one (e.g. "Not a Wii U RPX/RPL" for a PS1 .bin).
+  const allFormatErrors = errors.every((e) => /not a|expected|magic/i.test(e));
   throw new Error(
-    `Could not identify this file (detected: ${identify}). ${best ?? 'No parser could read it.'}`,
+    allFormatErrors
+      ? `Could not identify this file (detected: ${identify}). It doesn't match any supported format (ELF, PS-X EXE, XBE, XEX, SELF, GameBoy ROM, or PlayStation disc image). Try opening it as a raw binary.`
+      : `Could not identify this file (detected: ${identify}). ${best ?? 'No parser could read it.'}`,
   );
 }
 
-/// Rank parser errors so the most meaningful one (a real "not this format"
-/// message) is shown over a generic parse failure.
+/// Rank parser errors so the most meaningful one is shown.
 function scoreError(msg: string): number {
   let s = 0;
-  if (/not a|expected|magic/i.test(msg)) s += 2;
-  if (/wii u|ps3|ps4|ps5|xbe|xex|self|elf/i.test(msg)) s += 1;
-  if (/too small/i.test(msg)) s -= 1;
+  // Penalize "Not a Wii U RPX/RPL" — it's the most misleading error for
+  // non-Wii-U files since Wii U is the last parser tried.
+  if (/wii u/i.test(msg)) s -= 10;
+  if (/too small/i.test(msg)) s -= 2;
+  if (/not a|expected|magic/i.test(msg)) s += 1;
   return s;
 }
 
@@ -206,10 +216,17 @@ async function buildElf(path: string): Promise<Partial<BinarySummary>> {
   };
 }
 
-async function buildPs1(_path: string): Promise<Partial<BinarySummary>> {
+async function buildPs1(path: string): Promise<Partial<BinarySummary>> {
+  // Verify this is actually a PS1 binary by running the analysis command.
+  // analyze_ps1_binary handles bare ELF, PS-X EXE, and raw disc images
+  // (.bin/.iso with 2352-byte sectors — it reconstructs the data stream and
+  // extracts the embedded PS-X EXE/ELF). If it fails, this isn't PS1 → throw
+  // so the router tries the next candidate.
+  await call('analyze_ps1_binary', { path });
   return {
     kind: 'ps1',
     platform: 'PlayStation 1',
+    filename: path.split(/[\\/]/).pop() ?? path,
     sections: [],
     codeSections: [],
     meta: { hint: 'Analyse via the PS1 Analysis view' },
