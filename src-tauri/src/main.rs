@@ -351,6 +351,13 @@ fn identify_file(path: String) -> Result<String, String> {
             return Ok("gb-rom".into());
         }
     }
+    // PS4 encrypted retail eboot.bin: first 4 bytes are 4F 15 3D 1D (consistent
+    // across different publishers — this is the encrypted SELF container header,
+    // not a recognizable ELF/SCE magic). These files can't be decrypted without
+    // Sony's private keys.
+    if h.len() >= 4 && h[0] == 0x4F && h[1] == 0x15 && h[2] == 0x3D && h[3] == 0x1D {
+        return Ok("ps4-encrypted".into());
+    }
     // Raw CD-ROM image (.bin/.img with 2352-byte sectors): starts with the
     // CD-ROM sync pattern (00 FF FF FF FF FF FF FF FF FF FF 00).
     if h.len() >= 12 && h[0] == 0x00 && h[1..12].iter().all(|&b| b == 0xFF) && h[12] == 0x00 {
