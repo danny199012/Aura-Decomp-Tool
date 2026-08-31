@@ -138,13 +138,20 @@ The packaged installer will be available at `src-tauri/target/release/bundle/nsi
 ### Development
 
 ```bash
-# Starts the Vite dev server automatically, then opens the Tauri window
+# 1. Install frontend dependencies first (one time, after clone)
+npm install
+
+# 2. Starts the Vite dev server automatically, then opens the Tauri window
 npm run tauri dev
 
 # Frontend-only development (browser preview; backend commands won't run here)
 npm run dev
 ```
 
+> **'vite' is not recognized?** That just means `npm install` hasn't been run
+> yet — `vite` lives in `node_modules`. Run `npm install` once, then
+> `npm run tauri dev` again.
+>
 > The UI talks to the backend exclusively through Tauri `invoke` commands, so
 > most features need the desktop shell (`npm run tauri dev`). A plain-browser
 > `npm run dev` renders the layout + theme but shows a friendly
