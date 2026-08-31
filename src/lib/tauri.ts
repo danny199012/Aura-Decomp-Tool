@@ -379,6 +379,8 @@ async function buildRetroRom(path: string, identify: string): Promise<Partial<Bi
     } catch (e) { throw e; }
   }
   // NES / SNES / N64 / GBA / NDS — basic identification summary.
+  // Only succeed for ACTUAL retro ROM types; if identify is "raw" (unknown),
+  // throw so the router tries the next candidate.
   const platforms: Record<string, string> = {
     'nes-rom': 'Nintendo (NES)',
     'snes-rom': 'Super Nintendo (SNES)',
@@ -386,10 +388,10 @@ async function buildRetroRom(path: string, identify: string): Promise<Partial<Bi
     'gba-rom': 'GameBoy Advance',
     'nds-rom': 'Nintendo DS',
   };
-  const platform = platforms[identify] ?? `Retro ROM (${identify})`;
-  // For GB/GBC/GBC-disguised-as-gb, we already handled above. For other
-  // retro ROMs, the identify_gb_rom call would return is_gameboy=false, but
-  // that doesn't mean we can't show a summary.
+  const platform = platforms[identify];
+  if (!platform) {
+    throw new Error(`Not a recognized retro ROM type (got: ${identify})`);
+  }
   return {
     kind: 'gameboy' as BinaryKind, // reuse the 'gameboy' kind for the retro ROM summary path
     platform,
