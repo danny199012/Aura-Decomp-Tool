@@ -138,10 +138,10 @@ The packaged installer will be available at `src-tauri/target/release/bundle/nsi
 ### Development
 
 ```bash
-# Start the dev server with hot-reload (Tauri window)
+# Starts the Vite dev server automatically, then opens the Tauri window
 npm run tauri dev
 
-# Frontend-only development (browser preview)
+# Frontend-only development (browser preview; backend commands won't run here)
 npm run dev
 ```
 
@@ -149,18 +149,29 @@ npm run dev
 > most features need the desktop shell (`npm run tauri dev`). A plain-browser
 > `npm run dev` renders the layout + theme but shows a friendly
 > "backend unavailable" state until the shell hosts it.
+>
+> `tauri.conf.json` wires `beforeDevCommand` → `npm run dev` and
+> `devUrl` → `http://localhost:1420`, so a plain `npm run tauri dev` works out
+> of the box; `beforeBuildCommand` ensures `dist/` exists for
+> `npm run tauri build`.
 
 ### Verify the backend without a webview
 
-The Tauri crate can't be compiled in CI/sandboxes (no GTK/WebKit). Use the
-standalone harness in [`/tmp/xcheck`] to type-check the backend modules and run
-their smoke tests with a fake `#[tauri::command]` proc-macro:
+The Tauri crate can't be compiled in CI/sandboxes (no GTK/WebKit). The
+standalone harness in `/tmp/xcheck` verifies the backend two ways, using fake
+`tauri`/`tauri-plugin-dialog`/`tauri-plugin-shell` crates + real `tokio`:
 
-```bash
-cd /tmp/xcheck && cargo run && cargo test
-```
+- `cargo build --bin fullapp -p fullapp` — type-checks the **real
+  `src-tauri/src/main.rs`** (with every backend module) exactly as a real build
+  does: `#[tauri::command]` signatures, `generate_handler!` command list,
+  ELF/GB disassembly, exports, and all cross-module paths.
+- `cargo test --bin xcheck` — runs 15 smoke tests covering LZX decoding, PPC
+  disassembly, SDK symbol matching, decomp-project export, interactive call
+  graph, and the PS1 symbol scanner.
 
-The full `tauri build` (webview bundling) must be run on a real desktop machine.
+The full `tauri build` (webview bundling + installer) still must be run on a
+real desktop machine — on Windows that's automatic; on macOS/Linux install the
+system webview libraries listed earlier.
 
 ---
 

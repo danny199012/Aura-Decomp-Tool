@@ -1,4 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The `#[tauri::command]` macro generates code containing `!` (never) type
+// expressions. Recent Rust toolchains warn/deny `dependency_on_unit_never_type_fallback`
+// (part of the rust-2024-compatibility lint set) for that generated code, so we
+// opt out of the future-compat lint the same way the Tauri community does.
+#![allow(dependency_on_unit_never_type_fallback)]
 
 mod ps1_analysis;
 mod ps1_call_graph_enhanced;
@@ -345,8 +350,13 @@ fn read_u16(data: &[u8], offset: usize, is_little_endian: bool) -> u16 {
 }
 
 /// Parse a MIPS ELF file and extract sections, symbols, and disassembly
+///
+/// NOTE: deliberately NOT `pub` — a `pub` + `#[tauri::command]` fn at the crate
+/// root makes Tauri emit both `#[macro_export]` and a `pub use` of the hidden
+/// `__cmd__…` macros, which collide (`E0255`). Commands are resolved within the
+/// crate, so plain `fn` is all that's needed.
 #[tauri::command]
-pub fn parse_elf_file(path: String) -> Result<ElfFileInfo, String> {
+fn parse_elf_file(path: String) -> Result<ElfFileInfo, String> {
     let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     if data.len() < 64 {
@@ -1329,6 +1339,33 @@ fn sce_code_sections<'a>(sections: &'a [ElfSection]) -> Vec<CodeSection<'a>> {
         .collect()
 }
 
+/// Rename `sub_XXXXXXXX` entries to their real PS1 SDK names (libsd/libcd/
+/// libspuc/kernel) where the embedded PS1 symbol database has a reference to a
+/// name that lands exactly on a detected function start inside a code section.
+/// Best-effort — on fully stripped retail binaries this is typically a no-op;
+/// the PS1 matcher scans for ASCII symbol names, so it fires when the binary
+/// actually carries those strings (notably dev/partial-strip builds).
+fn apply_ps1_sdk_names(sections: &[ElfSection], funcs: &mut [FunctionEntry]) {
+    let matches = ps1_symbols::scan_ps1_symbol_matches(sections);
+    if matches.is_empty() {
+        return;
+    }
+    // Index name resolves by absolute address (section base + match offset).
+    let by_addr: std::collections::HashMap<u32, &str> = matches
+        .iter()
+        .filter_map(|m| {
+            let sec = sections.get(m.section_index)?;
+            (!sec.name.starts_with(".text")).then_some(())?;
+            Some((sec.address + m.offset, m.symbol.as_str()))
+        })
+        .collect();
+    for f in funcs.iter_mut() {
+        if let Some(name) = by_addr.get(&f.start) {
+            f.name = name.to_string();
+        }
+    }
+}
+
 /// Rename `sub_XXXXXXXX` entries to their real SDK names where the SCE symbol
 /// database has an unambiguous hash match. Runs the matcher over executable
 /// sections and patches any `FunctionEntry` whose start coincides with a match.
@@ -1469,6 +1506,20 @@ fn identify_gb_rom(path: String) -> Result<GbIdentification, String> {
     })
 }
 
+/// Append one disassembled GameBoy instruction line to the output buffer.
+#[allow(clippy::too_many_arguments)]
+fn emit(output: &mut String, addr: u32, bytes: &[u8], mnemonic: &str, operands: &str) {
+    let hex = bytes.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+    output.push_str(&format!("{:08X}  {:8}  {:<8} {}\n", addr, hex, mnemonic, operands));
+}
+
+/// Read a little-endian u16 from the ROM at `offset`.
+fn read_le_u16(data: &[u8], offset: usize) -> u16 {
+    let lo = data.get(offset).copied().unwrap_or(0);
+    let hi = data.get(offset + 1).copied().unwrap_or(0);
+    u16::from_le_bytes([lo, hi])
+}
+
 /// Disassemble the GameBoy Z80 ROM starting at `base_addr` (usually 0x0000).
 /// Returns a formatted disassembly string.
 #[tauri::command]
@@ -1482,17 +1533,11 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
     output.push_str(&format!("GameBoy Z80 Disassembly (ROM, {} bytes)\n\n", rom_data.len()));
 
     // GameBoy Z80 subset register names
-    const REGS_8: [&str; 8] = ["b","c","d","e","h","l","(hl)","a"];
-    const REGS_16: [&[&str]; 4] = &[&["b","c"], &["d","e"], &["h","l"], &["sp"]];
-    const FLAG_Z: &str = "z";
-    const FLAG_N: &str = "n";
-    const FLAG_H: &str = "h";
-    const FLAG_C: &str = "c";
 
     let mut offset = base_addr as usize;
     let mut pc = 0u32; // program counter relative to ROM start
 
-    while offset < rom_data.len() && (pc - base_addr) / 4 < max_instructions as u32 {
+    while offset < rom_data.len() && pc.saturating_sub(base_addr) / 4 < max_instr as u32 {
         let addr = base_addr + pc.wrapping_sub(base_addr);
         let opcode = rom_data[offset] as u16;
         let mut size: u8 = 1;
@@ -1505,7 +1550,7 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
             // LD BC, nn
             0x01 => {
                 let val = read_le_u16(&rom_data, offset);
-                emit(&mut output, addr, &[opcode as u8, (val&0xFF) as u8, ((val>>8)&0xFF) as u8], "ld", "bc, 0x{:04X}", val);
+                emit(&mut output, addr, &[opcode as u8, (val&0xFF) as u8, ((val>>8)&0xFF) as u8], "ld", &format!("bc, 0x{:04X}", val));
                 size = 3;
             }
 
@@ -1521,17 +1566,10 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
             // INC B
             0x05 => emit(&mut output, addr, &[opcode as u8], "inc", "b"),
 
-            // DEC C
-            0x06 => {
-                let val = rom_data[offset+1] as i8;
-                emit(&mut output, addr, &[opcode as u8, val as u8], "ld", "c, {}", val);
-                size = 2;
-            }
-
             // LD C, n
             0x06 => {
                 let val = rom_data[offset+1];
-                emit(&mut output, addr, &[opcode as u8, val], "ld", "c, 0x{:02X}", val);
+                emit(&mut output, addr, &[opcode as u8, val], "ld", &format!("c, 0x{:02X}", val));
                 size = 2;
             }
 
@@ -1541,7 +1579,7 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
             // LD (nn), SP
             0x08 => {
                 let addr_val = read_le_u16(&rom_data, offset);
-                emit(&mut output, addr, &[opcode as u8, (addr_val&0xFF) as u8, ((addr_val>>8)&0xFF) as u8], "ld", "(0x{:04X}), sp", addr_val);
+                emit(&mut output, addr, &[opcode as u8, (addr_val&0xFF) as u8, ((addr_val>>8)&0xFF) as u8], "ld", &format!("(0x{:04X}), sp", addr_val));
                 size = 3;
             }
 
@@ -1549,21 +1587,21 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
             0xC9 => emit(&mut output, addr, &[opcode as u8], "ret", ""),
 
             // ADD HL, BC
-            0x09 => emit(&mut output, addr, &[opcode as u8], "add hl, bc"),
+            0x09 => emit(&mut output, addr, &[opcode as u8], "add hl, bc", ""),
 
             // DEC BC
-            0x0B => emit(&mut output, addr, &[opcode as u8], "dec bc"),
+            0x0B => emit(&mut output, addr, &[opcode as u8], "dec bc", ""),
 
             // INC A
-            0x0C => emit(&mut output, addr, &[opcode as u8], "inc a"),
+            0x0C => emit(&mut output, addr, &[opcode as u8], "inc a", ""),
 
             // DEC A
-            0x0D => emit(&mut output, addr, &[opcode as u8], "dec a"),
+            0x0D => emit(&mut output, addr, &[opcode as u8], "dec a", ""),
 
             // LD A, n
             0x0E => {
                 let val = rom_data[offset+1];
-                emit(&mut output, addr, &[opcode as u8, val], "ld", "a, 0x{:02X}", val);
+                emit(&mut output, addr, &[opcode as u8, val], "ld", &format!("a, 0x{:02X}", val));
                 size = 2;
             }
 
@@ -1582,25 +1620,25 @@ fn disassemble_gb_rom(rom_data: Vec<u8>, base_addr: u32, max_instructions: Optio
             }
 
             // JP HL
-            0xE9 => emit(&mut output, addr, &[opcode as u8], "jp hl"),
+            0xE9 => emit(&mut output, addr, &[opcode as u8], "jp hl", ""),
 
             // DI
-            0xF3 => emit(&mut output, addr, &[opcode as u8], "di"),
+            0xF3 => emit(&mut output, addr, &[opcode as u8], "di", ""),
 
             // EI
-            0xFB => emit(&mut output, addr, &[opcode as u8], "ei"),
+            0xFB => emit(&mut output, addr, &[opcode as u8], "ei", ""),
 
             // CPL
-            0x2F => emit(&mut output, addr, &[opcode as u8], "cpl"),
+            0x2F => emit(&mut output, addr, &[opcode as u8], "cpl", ""),
 
             // SCF
-            0x3F => emit(&mut output, addr, &[opcode as u8], "scf"),
+            0x3F => emit(&mut output, addr, &[opcode as u8], "scf", ""),
 
             // CCF
-            0x3E => emit(&mut output, addr, &[opcode as u8], "ccf"),
+            0x3E => emit(&mut output, addr, &[opcode as u8], "ccf", ""),
 
             // HALT
-            0x76 => emit(&mut output, addr, &[opcode as u8], "halt"),
+            0x76 => emit(&mut output, addr, &[opcode as u8], "halt", ""),
 
             // ADD A, n
             0xC6 => {
@@ -2134,7 +2172,7 @@ fn export_decomp_project(
         .map(|f| decomp_export::DecompFunction {
             address: f.start as u64,
             name: f.name.clone(),
-            size: f.size,
+            size: f.size as usize,
             is_named: !f.name.starts_with("sub_"),
             source: if !f.name.starts_with("sub_") {
                 decomp_export::FunctionSource::SdkMatch
@@ -2256,10 +2294,10 @@ async fn main() {
             disassemble_section,
             detect_functions,
             get_call_graph,
-            scan_ps1_symbols,
-            analyze_ps1_binary,
-            get_enhanced_call_graph,
-            generate_ps1_recomp_config,
+            ps1_symbols::scan_ps1_symbols,
+            ps1_analysis::analyze_ps1_binary,
+            ps1_call_graph_enhanced::get_enhanced_call_graph,
+            ps1_recomp_export::generate_ps1_recomp_config,
             scan_sce_symbols,
             export_functions_csv,
             export_functions_csv_dialog,
