@@ -299,11 +299,13 @@ fn identify_file(path: String) -> Result<String, String> {
         return Err(format!("File not found: {}", path));
     }
     let mut file = fs::File::open(p).map_err(|e| e.to_string())?;
-    // Read enough for GB header (0x134+) and the ISO9660 PVD magic (0x8001).
-    let mut head = [0u8; 0x8006];
+    // Read up to 0x8006 bytes (enough for GB header + ISO9660 PVD).
+    // Use read_to_end with a Take to avoid partial reads (Windows File::read
+    // can return fewer bytes than the buffer).
     use std::io::Read;
-    let n = file.read(&mut head).unwrap_or(0);
-    let h = &head[..n];
+    let mut head = Vec::with_capacity(0x8006);
+    file.take(0x8006).read_to_end(&mut head).map_err(|e| e.to_string())?;
+    let h = &head[..];
 
     if h.len() >= 5 && &h[0..4] == [0x7f, b'E', b'L', b'F'] {
         if h[4] == 1 {
@@ -326,9 +328,13 @@ fn identify_file(path: String) -> Result<String, String> {
     if h.len() >= 4 && &h[0..3] == b"XEX" && (b'0'..=b'2').contains(&h[3]) {
         return Ok("xex".into());
     }
-    // PS3/PS4/PS5 SELF: "SCE\0"
-    if h.len() >= 4 && &h[0..3] == b"SCE" && h[3] == 0 {
-        return Ok("self".into());
+    // PS3/PS4/PS5 SELF: "SCE\0" — check both byte orders since the 4-byte magic
+    // 0x53434500 may appear as "SCE\0" (BE) or "\0ECS" (LE) depending on the tool
+    // that produced the file.
+    if h.len() >= 4 {
+        if (&h[0..3] == b"SCE" && h[3] == 0) || (h[0] == 0 && &h[1..4] == b"ECS") {
+            return Ok("self".into());
+        }
     }
     // CHD (MAME compressed hunks — PS1/PS2/etc. disc images): "MComprHD"
     if h.len() >= 8 && &h[0..8] == b"MComprHD" {
@@ -346,8 +352,13 @@ fn identify_file(path: String) -> Result<String, String> {
             return Ok("gb-rom".into());
         }
     }
-    // PlayStation disc image (.iso/.bin/.cue): ISO9660 PVD "CD001" at sector 16.
-    // PS1 games are CD-ROMs; the game executable (PS-X EXE) lives inside.
+    // Raw CD-ROM image (.bin/.img with 2352-byte sectors): starts with the
+    // CD-ROM sync pattern (00 FF FF FF FF FF FF FF FF FF FF 00).
+    if h.len() >= 12 && h[0] == 0x00 && h[1..12].iter().all(|&b| b == 0xFF) && h[12] == 0x00 {
+        return Ok("ps1-disc".into());
+    }
+    // PlayStation disc image (.iso with 2048-byte sectors): ISO9660 PVD
+    // "CD001" at sector 16 (byte 0x8001).
     if h.len() > 0x8005 && &h[0x8001..0x8006] == b"CD001" {
         return Ok("ps1-disc".into());
     }
