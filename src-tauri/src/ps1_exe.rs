@@ -140,6 +140,52 @@ pub fn extract_embedded_elf(path: &str) -> Result<Vec<u8>, String> {
     Ok(data[start..].to_vec())
 }
 
+/// Check if a byte buffer looks like a raw CD-ROM image (2352-byte sectors).
+/// Raw sectors start with the CD-ROM sync pattern: 00 FF FF FF FF FF FF FF FF
+/// FF FF 00 (12 bytes at the start of every sector).
+fn is_raw_cdrom(data: &[u8]) -> bool {
+    data.len() >= 2352
+        && data[0] == 0x00
+        && data[1..12].iter().all(|&b| b == 0xFF)
+        && data[12] == 0x00
+}
+
+/// Reconstruct a contiguous data stream from a raw 2352-byte-sector CD image
+/// by extracting the 2048-byte payload from each sector. PS1 discs use Mode 2
+/// (data at offset 24); Mode 1 discs have data at offset 16. We try both.
+fn reconstruct_data_from_raw(data: &[u8]) -> Vec<u8> {
+    const SECTOR_SIZE: usize = 2352;
+    const DATA_SIZE: usize = 2048;
+
+    // Try Mode 2 (offset 24) first — PS1 CD-XA uses Mode 2.
+    for &data_off in &[24usize, 16usize] {
+        let mut out = Vec::with_capacity(data.len() / SECTOR_SIZE * DATA_SIZE);
+        let mut pos = 0;
+        while pos + SECTOR_SIZE <= data.len() {
+            let end = pos + data_off + DATA_SIZE;
+            if end <= data.len() {
+                out.extend_from_slice(&data[pos + data_off..end]);
+            }
+            pos += SECTOR_SIZE;
+        }
+        // Check if this reconstruction contains a PS-X EXE.
+        if find_psx_exe_offset_in_disc(&out).is_some() {
+            return out;
+        }
+    }
+    // Fall back to Mode 2 data even if no PS-X EXE found (best effort).
+    let mut out = Vec::with_capacity(data.len() / SECTOR_SIZE * DATA_SIZE);
+    let mut pos = 0;
+    while pos + SECTOR_SIZE <= data.len() {
+        let end = pos + 24 + DATA_SIZE;
+        if end <= data.len() {
+            out.extend_from_slice(&data[pos + 24..end]);
+        }
+        pos += SECTOR_SIZE;
+    }
+    out
+}
+
 /// Scan a raw disc image for the "PS-X EXE" magic and return its byte offset.
 ///
 /// PS1 games ship on CD-ROMs; the bootable executable (a PS-X EXE) is stored as
@@ -164,13 +210,27 @@ pub fn find_psx_exe_offset_in_disc(data: &[u8]) -> Option<usize> {
 ///
 /// Returns the ELF bytes of the bootable game executable. Works by finding the
 /// PS-X EXE inside the disc image and pulling out the ELF that follows it.
+///
+/// Handles both `.iso` (2048-byte contiguous data sectors) and `.bin` (raw
+/// 2352-byte sectors with sync/header/ECC overhead) by reconstructing the data
+/// stream from raw sectors before scanning.
 pub fn extract_elf_from_disc_image(path: &str) -> Result<Vec<u8>, String> {
     let data = fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let exe_off = find_psx_exe_offset_in_disc(&data)
+
+    // If this is a raw 2352-byte-sector image (.bin/.img), reconstruct the
+    // contiguous data stream (2048 bytes per sector) before scanning — the raw
+    // sector headers fragment the ELF across 304-byte gaps otherwise.
+    let search_data: std::borrow::Cow<'_, [u8]> = if is_raw_cdrom(&data) {
+        std::borrow::Cow::Owned(reconstruct_data_from_raw(&data))
+    } else {
+        std::borrow::Cow::Borrowed(&data)
+    };
+
+    let exe_off = find_psx_exe_offset_in_disc(&search_data)
         .ok_or_else(|| "No PS-X EXE found in disc image".to_string())?;
 
     // Parse the PS-X header at that offset to locate the embedded ELF.
-    let exe = &data[exe_off..];
+    let exe = &search_data[exe_off..];
     // Reuse the magic-offset scan logic over the EXE to find the ELF magic.
     let elf_rel = exe
         .windows(4)
