@@ -6,7 +6,7 @@ Produces (in src-tauri/icons/):
   128x128.png       128x128
   32x32.png         32x32
   128x128@2x.png    256x256
-  icon.ico          multi-size Windows ICO (256..16, PNG-compressed entries)
+  icon.ico          multi-size Windows ICO (256..16, 32-bit DIB/BMP entries)
   icon.icns         macOS ICNS (512 / 256 / 128 PNG entries)
 
 Design: rounded-square with an indigo -> violet diagonal gradient and a white
@@ -126,18 +126,57 @@ def _box_downsample(rgba: bytes, src: int, dst: int) -> bytes:
                 out[o + 3] = a // n
     return bytes(out)
 
+def _dib_ico_entry(size: int, rgba: bytes) -> bytes:
+    """Build one 32-bit BGRA DIB (BITMAPINFOHEADER) + AND-mask for an .ico entry.
+
+    rc.exe rejects PNG-compressed icon entries ('RC2176: old DIB'), so the .ico
+    must use classic uncompressed DIB data instead of embedded PNGs.
+    """
+    header = struct.pack(
+        "<IiiHHIIiiII",
+        40,       # biSize: BITMAPINFOHEADER
+        size,     # biWidth
+        size * 2, # biHeight: XOR image + AND mask
+        1,        # biPlanes
+        32,       # biBitCount
+        0,        # biCompression: BI_RGB
+        0,        # biSizeImage (0 is fine for BI_RGB)
+        0, 0,     # biXPelsPerMeter, biYPelsPerMeter
+        0, 0,     # biClrUsed, biClrImportant
+    )
+    # RGBA -> BGRA, bottom-up scanlines.
+    bgra = bytearray(size * size * 4)
+    for y in range(size):
+        src = y * size * 4
+        dst = (size - 1 - y) * size * 4
+        for x in range(size):
+            o = src + x * 4
+            d = dst + x * 4
+            bgra[d] = rgba[o + 2]
+            bgra[d + 1] = rgba[o + 1]
+            bgra[d + 2] = rgba[o]
+            bgra[d + 3] = rgba[o + 3]
+    # AND mask: 1bpp, rows padded to 4 bytes, all zeros (alpha channel drives
+    # transparency on modern Windows).
+    row_bytes = ((size + 31) // 32) * 4
+    and_mask = b"\x00" * (row_bytes * size)
+    return header + bytes(bgra) + and_mask
+
+
 def write_ico(sizes_entries):
+    """sizes_entries: list of (size, rgba_bytes) -> rc.exe-compatible .ico."""
     header = struct.pack("<HHH", 0, 1, len(sizes_entries))
     dir_entries = b""
     payload = b""
     offset = 6 + 16 * len(sizes_entries)
-    for size, png in sizes_entries:
-        dim = size if size < 256 else 0
+    for size, rgba in sizes_entries:
+        dib = _dib_ico_entry(size, rgba)
+        dim = size if size < 256 else 0  # 256 is stored as 0 in the dir entry
         dir_entries += struct.pack(
-            "<BBBBHHII", dim, dim, 0, 0, 1, 32, len(png), offset
+            "<BBBBHHII", dim, dim, 0, 0, 1, 32, len(dib), offset
         )
-        payload += png
-        offset += len(png)
+        payload += dib
+        offset += len(dib)
     return header + dir_entries + payload
 
 
@@ -166,10 +205,10 @@ def main():
         "128x128@2x.png": write_png(256, 256, png256),
         "icon.ico": write_ico(
             [
-                (256, write_png(256, 256, png256)),
-                (128, write_png(128, 128, png128)),
+                (256, png256),
+                (128, png128),
                 (48, _box_downsample(png512, 512, 48)),
-                (32, write_png(32, 32, png032)),
+                (32, png032),
                 (16, _box_downsample(png512, 512, 16)),
             ]
         ),
