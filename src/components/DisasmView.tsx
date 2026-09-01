@@ -14,12 +14,17 @@ export default function DisasmView() {
   const [funcs, setFuncs] = useState<FunctionEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Windowing: render only the first `visible` instructions so large sections
+  // (thousands of rows) don't freeze the UI. Grows in chunks via "Show more".
+  const PAGE = 2000;
+  const [visible, setVisible] = useState(PAGE);
 
   useEffect(() => {
     if (!summary) return;
     const first = summary.codeSections[0]?.name ?? '';
     setSection(first);
     setInsns([]);
+    setVisible(PAGE);
   }, [summary]);
 
   useEffect(() => {
@@ -40,6 +45,7 @@ export default function DisasmView() {
       const loader = disassemblerFor(summary);
       const out = await loader(summary.path, sectionName);
       setInsns(out);
+      setVisible(PAGE);
     } catch (e) {
       setError(String(e));
       setInsns([]);
@@ -120,30 +126,45 @@ export default function DisasmView() {
         ) : insns.length === 0 ? (
           <div className="text-sm text-fg-muted">Select a code section to disassemble.</div>
         ) : (
-          <div className="max-h-[55vh] overflow-auto rounded-lg border border-app-border bg-app-panel-soft">
-            <table className="w-full font-mono text-[13px]">
-              <thead className="sticky top-0 bg-app-panel text-xs uppercase tracking-wide text-fg-muted">
-                <tr>
-                  <th className="px-3 py-2 text-left">Address</th>
-                  <th className="px-3 py-2 text-left">Bytes</th>
-                  <th className="px-3 py-2 text-left">Instruction</th>
-                  <th className="px-3 py-2 text-left">Operands</th>
-                </tr>
-              </thead>
-              <tbody>
-                {insns.map((ins, i) => (
-                  <tr key={i} className="border-t border-app-border/40 hover:bg-app-hover">
-                    <td className="px-3 py-1 text-accent-bright">{hex32(ins.address)}</td>
-                    <td className="px-3 py-1 text-fg-muted">
-                      {ins.bytes && ins.bytes.length ? bytesToHex(ins.bytes) : '—'}
-                    </td>
-                    <td className="px-3 py-1 font-semibold text-fg">{ins.mnemonic || ins.text || '—'}</td>
-                    <td className="px-3 py-1 text-fg-secondary">{ins.operands ?? ''}</td>
+          <>
+            <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-fg-muted">
+              <span>Showing {Math.min(visible, insns.length)} of {insns.length}</span>
+              {visible < insns.length && (
+                <Button variant="ghost" onClick={() => setVisible((v) => v + PAGE)}>
+                  Show next {PAGE}
+                </Button>
+              )}
+              {visible < insns.length && (
+                <Button variant="ghost" onClick={() => setVisible(insns.length)}>
+                  Show all
+                </Button>
+              )}
+            </div>
+            <div className="max-h-[55vh] overflow-auto rounded-lg border border-app-border bg-app-panel-soft">
+              <table className="w-full font-mono text-[13px]">
+                <thead className="sticky top-0 bg-app-panel text-xs uppercase tracking-wide text-fg-muted">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Address</th>
+                    <th className="px-3 py-2 text-left">Bytes</th>
+                    <th className="px-3 py-2 text-left">Instruction</th>
+                    <th className="px-3 py-2 text-left">Operands</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {insns.slice(0, visible).map((ins, i) => (
+                    <tr key={i} className="border-t border-app-border/40 hover:bg-app-hover">
+                      <td className="px-3 py-1 text-accent-bright">{hex32(ins.address)}</td>
+                      <td className="px-3 py-1 text-fg-muted">
+                        {ins.bytes && ins.bytes.length ? bytesToHex(ins.bytes) : '—'}
+                      </td>
+                      <td className="px-3 py-1 font-semibold text-fg">{ins.mnemonic || ins.text || '—'}</td>
+                      <td className="px-3 py-1 text-fg-secondary">{ins.operands ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Panel>
     </div>

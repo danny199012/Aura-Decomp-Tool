@@ -11,7 +11,7 @@
       (function () {
         try {
           var t = localStorage.getItem('aura-theme');
-          if (t === 'midnight' || t === 'aurora' || t === 'synthwave' || t === 'carbon') {
+          if (t === 'midnight' || t === 'aurora' || t === 'synthwave' || t === 'carbon' || t === 'crimson') {
             document.documentElement.setAttribute('data-theme', t);
           }
         } catch (e) { /* localStorage blocked — default Midnight applies */ }

@@ -80,6 +80,18 @@ export default function ForceGraph({ graph, selectedId, onSelect }: ForceGraphPr
       .map((e: GraphEdge) => ({ source: e.source, target: e.target }))
       .filter((l) => nodeById.has(l.source) && nodeById.has(l.target));
 
+    // Pre-position nodes in a golden-angle spiral so the simulation starts from
+    // a sensible layout instead of randomized points (which causes a violent,
+    // CPU-heavy first burst and the node positions flying everywhere).
+    const cx = width / 2, cy = height / 2;
+    const maxR = Math.min(width, height) * 0.42;
+    nodes.forEach((d, i) => {
+      const t = i / Math.max(nodes.length, 1);
+      const ang = Math.PI * 2 * t * 2.4; // golden-angle-ish
+      d.x = cx + Math.cos(ang) * maxR * Math.sqrt(t);
+      d.y = cy + Math.sin(ang) * maxR * Math.sqrt(t);
+    });
+
     // Tuned forces: moderate repulsion, gentle center pull, strong collision.
     const sim = d3.forceSimulation<SimNode>(nodes)
       .force('link', d3.forceLink(links).id((d: unknown) => (d as GraphNode).id).distance(60).strength(0.3))
@@ -88,7 +100,9 @@ export default function ForceGraph({ graph, selectedId, onSelect }: ForceGraphPr
       .force('collide', d3.forceCollide<SimNode>().radius((d) => nodeRadius(d) + 8).strength(0.9))
       .force('x', d3.forceX<SimNode>(width / 2).strength(0.04))
       .force('y', d3.forceY<SimNode>(height / 2).strength(0.04))
-      .alphaDecay(0.03);
+      // Settle much faster so the UI doesn't hang animating for seconds.
+      .alphaDecay(0.12)
+      .alphaMin(0.05);
     simRef.current = sim;
 
     // Links (curved paths with arrowheads)
@@ -138,7 +152,9 @@ export default function ForceGraph({ graph, selectedId, onSelect }: ForceGraphPr
       return `M${sx},${sy}A${dr * 1.5},${dr * 1.5} 0 0,1${tx},${ty}`;
     };
 
-    sim.on('tick', () => {
+    let rafPending = false;
+    const draw = () => {
+      rafPending = false;
       // Clamp nodes to the viewport so they can't escape.
       for (const d of nodes) {
         const r = nodeRadius(d);
@@ -147,7 +163,20 @@ export default function ForceGraph({ graph, selectedId, onSelect }: ForceGraphPr
       }
       link.attr('d', linkArc);
       nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
+    };
+    sim.on('tick', () => {
+      // Throttle DOM updates to one per animation frame — the simulation ticks
+      // far faster than the screen refreshes, so this avoids wasted layout work
+      // and keeps the UI responsive.
+      if (!rafPending) {
+        rafPending = true;
+        requestAnimationFrame(draw);
+      }
     });
+
+    // Kick off one draw immediately (pre-positioned), then let the sim settle.
+    draw();
+    sim.restart();
 
     return () => { sim.stop(); simRef.current = null; nodeSelRef.current = null; };
   }, [graph, onSelect]); // ← NO selectedId!
