@@ -84,8 +84,8 @@ export default function ExportView() {
       <header>
         <h1 className="text-xl font-bold text-fg">One-click decomp export</h1>
         <p className="text-sm text-fg-secondary">
-          Emits a complete decomp project scaffold: functions.csv, symbol_addrs.txt, undefined_syms.txt,
-          splat.yaml, config.toml, Makefile and a build README.
+          Emits a complete decomp project scaffold for any supported platform: functions.csv, symbol_addrs.txt,
+          undefined_syms.txt, splat.yaml, config.toml, functions.json, symbols.idc (IDA), Makefile and a build README.
         </p>
       </header>
 

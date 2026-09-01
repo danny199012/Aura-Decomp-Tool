@@ -351,12 +351,12 @@ fn identify_file(path: String) -> Result<String, String> {
             return Ok("gb-rom".into());
         }
     }
-    // PS4 encrypted retail eboot.bin: first 4 bytes are 4F 15 3D 1D (consistent
-    // across different publishers — this is the encrypted SELF container header,
-    // not a recognizable ELF/SCE magic). These files can't be decrypted without
-    // Sony's private keys.
-    if h.len() >= 4 && h[0] == 0x4F && h[1] == 0x15 && h[2] == 0x3D && h[3] == 0x1D {
-        return Ok("ps4-encrypted".into());
+    // PS4 eboot.bin / SELF: first 4 bytes are 4F 15 3D 1D (0x1D3D154F LE). This
+    // magic covers both the OpenOrbis homebrew "fake SELF" container (parseable)
+    // and the retail/encrypted SELF (needs Sony's keys). Distinguish by probing
+    // the fSELF header (keytype 0x101 + embedded ELF).
+    if h.len() >= 4 && ps4ps5::is_ps4_eboot_magic(h) {
+        return Ok(if ps4ps5::is_fself(h) { "ps4-self".into() } else { "ps4-encrypted".into() });
     }
     // Raw CD-ROM image (.bin/.img with 2352-byte sectors): starts with the
     // CD-ROM sync pattern (00 FF FF FF FF FF FF FF FF FF FF 00).
@@ -2265,58 +2265,141 @@ fn get_sdk_db_stats(platform: String) -> Result<serde_json::Value, String> {
 
 /// Export a complete decomp project (splat config, symbol files, build scaffold).
 /// This is the one-click export that eliminates manual project scaffolding.
+/// It routes to the platform's own parser so every supported console exports.
 #[tauri::command]
 fn export_decomp_project(
     path: String,
     platform: String,
     output_dir: String,
 ) -> Result<decomp_export::DecompExportResult, String> {
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {e}"))?;
     let filename = Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
 
-    // Build sections and functions from whatever parser applies.
-    // For now, we use a generic ELF/section extraction.
-    let info = parse_elf_file(path.clone())?;
-    let funcs = detect_functions_inner(&info)?;
+    let (sections, functions, entry, little_endian): (
+        Vec<decomp_export::DecompSection>,
+        Vec<decomp_export::DecompFunction>,
+        u64,
+        bool,
+    ) = match platform.as_str() {
+        "PS1" | "PS2" => {
+            let info = parse_elf_file(path.clone())?;
+            let funcs = detect_functions_inner(&info)?;
 
-    let sections: Vec<decomp_export::DecompSection> = info
-        .sections
-        .iter()
-        .map(|s| decomp_export::DecompSection {
-            name: s.name.clone(),
-            address: s.address as u64,
-            size: s.data.len(),
-            is_code: s.name.starts_with(".text") || s.name.starts_with(".init"),
-            file_offset: 0,
-        })
-        .collect();
-
-    let functions: Vec<decomp_export::DecompFunction> = funcs
-        .iter()
-        .map(|f| decomp_export::DecompFunction {
-            address: f.start as u64,
-            name: f.name.clone(),
-            size: f.size as usize,
-            is_named: !f.name.starts_with("sub_"),
-            source: if !f.name.starts_with("sub_") {
-                decomp_export::FunctionSource::SdkMatch
-            } else {
-                decomp_export::FunctionSource::Heuristic
-            },
-        })
-        .collect();
+            let sections: Vec<decomp_export::DecompSection> = info
+                .sections
+                .iter()
+                .filter(|s| !s.data.is_empty())
+                .map(|s| decomp_export::DecompSection {
+                    name: s.name.clone(),
+                    address: s.address as u64,
+                    size: s.size as usize,
+                    is_code: s.name.starts_with(".text") || s.name.starts_with(".init"),
+                    file_offset: s.offset as u64,
+                })
+                .collect();
+            let functions: Vec<decomp_export::DecompFunction> = funcs
+                .iter()
+                .map(|f| decomp_export::DecompFunction {
+                    address: f.start as u64,
+                    name: f.name.clone(),
+                    size: f.size as usize,
+                    is_named: !f.name.starts_with("sub_"),
+                    source: if !f.name.starts_with("sub_") {
+                        decomp_export::FunctionSource::SdkMatch
+                    } else {
+                        decomp_export::FunctionSource::Heuristic
+                    },
+                })
+                .collect();
+            (sections, functions, info.entry_point as u64, info.is_little_endian)
+        }
+        "PS3" => {
+            let info = ps3::parse_ps3(&data, &filename)?;
+            if info.encrypted {
+                return Err("PS3 SELF is encrypted — export requires a decrypted/homebrew binary".into());
+            }
+            let sections = info.sections.iter().map(|s| decomp_export::DecompSection {
+                name: s.name.clone(), address: s.sh_addr, size: s.sh_size as usize,
+                is_code: s.is_code, file_offset: s.sh_offset,
+            }).collect();
+            (sections, vec![], info.entry_point, false)
+        }
+        "PS4" | "PS5" => {
+            let info = ps4ps5::parse_ps4ps5(&data, &filename)?;
+            if info.encrypted {
+                return Err("PS4/PS5 SELF is encrypted — export requires an unencrypted/homebrew binary".into());
+            }
+            let sections = info.sections.iter().map(|s| decomp_export::DecompSection {
+                name: s.name.clone(), address: s.sh_addr, size: s.sh_size as usize,
+                is_code: s.is_code, file_offset: s.sh_offset,
+            }).collect();
+            (sections, vec![], info.entry_point, true)
+        }
+        "Wii U" => {
+            let info = wiiu::parse_rpx_rpl(&data, &filename)?;
+            let sections = info.sections.iter().map(|s| decomp_export::DecompSection {
+                name: s.name.clone(), address: s.sh_addr, size: s.sh_size as usize,
+                is_code: s.is_code, file_offset: s.sh_offset,
+            }).collect();
+            let mut by_addr: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+            for f in info.fimports.iter().chain(info.fexports.iter()).chain(info.symbols.iter()) {
+                by_addr.entry(f.address).or_insert_with(|| f.name.clone());
+            }
+            let mut functions: Vec<decomp_export::DecompFunction> = by_addr
+                .into_iter()
+                .map(|(address, name)| decomp_export::DecompFunction {
+                    address, name, size: 0, is_named: true,
+                    source: decomp_export::FunctionSource::SymbolTable,
+                })
+                .collect();
+            functions.sort_by_key(|f| f.address);
+            (sections, functions, info.entry_point, false)
+        }
+        "Xbox" => {
+            let info = xbox::parse_xbe(&data, &filename)?;
+            let sections = info.sections.iter().map(|s| decomp_export::DecompSection {
+                name: s.name.clone(), address: s.virtual_address as u64,
+                size: s.virtual_size as usize, is_code: s.executable,
+                file_offset: s.raw_offset as u64,
+            }).collect();
+            (sections, vec![], info.entry_point as u64, true)
+        }
+        "Xbox 360" => {
+            let info = xbox360::parse_xex(&data, &filename)?;
+            let base = info.image_base.unwrap_or(info.load_address) as u64;
+            let sections = info.pe_sections.iter().map(|s| decomp_export::DecompSection {
+                name: s.name.clone(), address: base + s.virtual_address as u64,
+                size: s.virtual_size as usize, is_code: s.executable,
+                file_offset: s.raw_offset as u64,
+            }).collect();
+            let functions: Vec<decomp_export::DecompFunction> = info.pe_exports
+                .iter().filter(|e| !e.name.is_empty())
+                .map(|e| decomp_export::DecompFunction {
+                    address: base + e.rva as u64, name: e.name.clone(), size: 0,
+                    is_named: true, source: decomp_export::FunctionSource::SymbolTable,
+                })
+                .collect();
+            (sections, functions, info.entry_point.unwrap_or(0) as u64, true)
+        }
+        other => {
+            return Err(format!(
+                "Export for platform '{other}' is not implemented yet. Use the Disassembly view for it, \
+                 or export with a supported platform (PS1/PS2/PS3/PS4/PS5/Wii U/Xbox/Xbox 360)."
+            ));
+        }
+    };
 
     Ok(decomp_export::generate_decomp_project(
         &filename,
         &platform,
         &sections,
         &functions,
-        info.entry_point as u64,
+        entry,
         &output_dir,
-        info.is_little_endian,
+        little_endian,
     ))
 }
 
@@ -2382,8 +2465,8 @@ fn get_supported_formats() -> Result<serde_json::Value, String> {
                 "platforms": ["PS3"]
             },
             {
-                "name": "PlayStation 4/5 SELF/ELF",
-                "extensions": [".self", ".elf", ".bin"],
+                "name": "PlayStation 4/5 SELF/ELF/eboot.bin",
+                "extensions": [".self", ".elf", ".bin", ".eboot.bin"],
                 "platforms": ["PS4", "PS5"]
             },
             {

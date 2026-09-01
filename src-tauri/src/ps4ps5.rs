@@ -1,7 +1,13 @@
 //! PlayStation 4 & PlayStation 5 support: little-endian ELF64 x86-64 homebrew
-//! executables and SELF wrapper parsing. Disassembly via iced-x86 at 64-bit.
+//! executables, SELF wrapper parsing, and the OpenOrbis/fake-SELF eboot.bin
+//! container (magic `4F 15 3D 1D`) used by homebrew. Disassembly via iced-x86
+//! at 64-bit.
 //!
 //! Retail PS4/PS5 SELFs are key-gated; they degrade gracefully with an error.
+//! The fSELF layout parsed here mirrors OpenOrbis' create-fself (fork of flatz'
+//! make_fself.py): header 0x20, self entries 0x20 each, embedded ELF header +
+//! program headers, extended info, NPDRM block, meta blocks/footer, signature,
+//! then raw (uncompressed, unencrypted) segment data.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +15,34 @@ use serde::{Deserialize, Serialize};
 /// magic as PS3, but the embedded ELF is little-endian x86-64.
 pub fn is_self(data: &[u8]) -> bool {
     data.len() >= 4 && &data[0..3] == b"SCE" && data[3] == 0
+}
+
+/// PS4/PS5 eboot.bin / SELF header magic: bytes `4F 15 3D 1D` == u32 LE 0x1D3D154F.
+pub fn is_ps4_eboot_magic(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0] == 0x4F && data[1] == 0x15 && data[2] == 0x3D && data[3] == 0x1D
+}
+
+/// True when the header is an OpenOrbis / fake-SELF (homebrew) container:
+/// magic + keytype 0x101 + a plausible even entry count + an embedded ELF
+/// header right after the self entries. Retail files share the magic but use a
+/// different header layout (no keytype 0x101 / no inline ELF), so they fail.
+pub fn is_fself(data: &[u8]) -> bool {
+    if !is_ps4_eboot_magic(data) || data.len() < 0x20 {
+        return false;
+    }
+    // fSELF: KeyType field at offset 0x08 == 0x101.
+    if ru32le(data, 0x08) != 0x101 {
+        return false;
+    }
+    let num = ru16le(data, 0x18) as usize;
+    if num == 0 || num > 128 || num % 2 != 0 {
+        return false;
+    }
+    let elf_off = 0x20 + num * 0x20;
+    if elf_off + 4 > data.len() {
+        return false;
+    }
+    &data[elf_off..elf_off + 4] == [0x7f, b'E', b'L', b'F']
 }
 
 /// Quick check for a little-endian ELF64 with e_machine == EM_X86_64 (62).
@@ -44,15 +78,114 @@ pub struct X64Instruction {
     pub size: usize,
 }
 
-/// Parse a PS4/PS5 executable (SELF or plain LE ELF64 x86-64).
+/// Parse a PS4/PS5 executable (SELF, eboot.bin/fSELF, or plain LE ELF64 x86-64).
 pub fn parse_ps4ps5(data: &[u8], filename: &str) -> Result<Ps4Ps5FileInfo, String> {
+    if is_ps4_eboot_magic(data) {
+        return parse_fself(data, filename);
+    }
     if is_self(data) {
         return parse_self(data, filename);
     }
     if is_ps4ps5_elf(data) {
         return parse_elf(data, filename);
     }
-    Err("Not a PS4/PS5 executable (expected SELF or LE ELF64 x86-64)".into())
+    Err("Not a PS4/PS5 executable (expected SELF, eboot.bin, or LE ELF64 x86-64)".into())
+}
+
+/// Segment types the PS4 loader maps into memory (ELF PT_LOAD plus the Orbis
+/// PT_SCE_RELRO / PT_SCE_DYNLIBDATA pseudo-segments).
+const PT_LOAD: u32 = 1;
+const PT_SCE_RELRO: u32 = 0x6100_0010;
+const PT_SCE_DYNLIBDATA: u32 = 0x6100_0000;
+
+/// Parse an OpenOrbis / fake-SELF PS4 eboot.bin container (unencrypted).
+///
+/// Layout (from create-fself, a port of flatz' make_fself.py):
+/// - 0x00  header (0x20 bytes: magic, version/mode/endian/attributes u8s,
+///          keytype u32=0x101, header_size u16, meta_size u16, file_size u64,
+///          num_entries u16, flags u16)
+/// - 0x20  num_entries x 0x20 self entries (properties/offset/file_size/memory_size
+///          u64 each); two entries per load segment: meta + data
+/// - ELF64 header 0x40 + full program-header table (0x38 each)
+/// - extended info 0x40, NPDRM block 0x30, meta blocks 0x50 x N, meta footer
+///   0x50, signature 0x100
+/// - raw segment data at the offsets recorded in the data entries
+///
+/// Only the fields needed to locate sections/entry are read; the crypto/meta
+/// areas are skipped entirely because fSELF segments are stored raw.
+fn parse_fself(data: &[u8], filename: &str) -> Result<Ps4Ps5FileInfo, String> {
+    if !is_ps4_eboot_magic(data) {
+        return Err("Not a PS4 eboot.bin (missing 4F 15 3D 1D magic)".into());
+    }
+    if !is_fself(data) {
+        return Err(
+            "PS4 eboot.bin is a retail/encrypted SELF, which requires Sony's keys to decrypt. \
+             Homebrew (OpenOrbis / fake-SELF) eboot.bin files are supported."
+                .into(),
+        );
+    }
+
+    let num = ru16le(data, 0x18) as usize;
+    let elf_off = 0x20 + num * 0x20;
+    if elf_off + 0x40 > data.len() {
+        return Err("PS4 fSELF: truncated (no embedded ELF header)".into());
+    }
+
+    let entry = ru64le(data, elf_off + 0x18);
+    let machine = ru16le(data, elf_off + 0x12);
+    let phentsize = ru16le(data, elf_off + 0x36) as usize;
+    let phnum = ru16le(data, elf_off + 0x38) as usize;
+    if phentsize < 0x38 || phnum == 0 {
+        return Err("PS4 fSELF: invalid program header table".into());
+    }
+    let ph_off = elf_off + 0x40;
+    if ph_off + phnum * phentsize > data.len() {
+        return Err("PS4 fSELF: program header table runs past end of file".into());
+    }
+
+    // Data entries are the odd-indexed self entries (meta/data pairs per segment).
+    let mut data_entries: Vec<(u64, u64)> = Vec::new(); // (file offset, file size)
+    for i in (1..num).step_by(2) {
+        let o = 0x20 + i * 0x20;
+        data_entries.push((ru64le(data, o + 8), ru64le(data, o + 16)));
+    }
+
+    let mut sections = Vec::new();
+    let mut seg_idx = 0usize;
+    for i in 0..phnum {
+        let o = ph_off + i * phentsize;
+        let p_type = ru32le(data, o);
+        if p_type != PT_LOAD && p_type != PT_SCE_RELRO && p_type != PT_SCE_DYNLIBDATA {
+            continue;
+        }
+        let p_flags = ru32le(data, o + 4);
+        let p_vaddr = ru64le(data, o + 0x10);
+        let p_filesz = ru64le(data, o + 0x20);
+        if let Some(&(data_off, data_sz)) = data_entries.get(seg_idx) {
+            sections.push(Ps4Ps5Section {
+                name: format!("seg{}", seg_idx),
+                sh_addr: p_vaddr,
+                sh_offset: data_off,
+                sh_size: if data_sz > 0 { data_sz } else { p_filesz },
+                is_code: (p_flags & 1) != 0,
+            });
+        }
+        seg_idx += 1;
+    }
+
+    if sections.is_empty() {
+        return Err("PS4 fSELF: no loadable segments found".into());
+    }
+
+    Ok(Ps4Ps5FileInfo {
+        filename: filename.into(),
+        file_type: "SELF (fSELF / homebrew eboot.bin, unencrypted)".into(),
+        entry_point: entry,
+        machine,
+        sections,
+        has_orbis_note: false,
+        encrypted: false,
+    })
 }
 
 fn parse_self(data: &[u8], filename: &str) -> Result<Ps4Ps5FileInfo, String> {

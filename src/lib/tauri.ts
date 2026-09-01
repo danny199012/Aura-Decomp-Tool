@@ -132,8 +132,10 @@ export async function probeBinary(path: string): Promise<BinarySummary> {
     candidates.push(() => buildElf(path));
   } else if (identify === 'gb-rom' || identify === 'gba-rom' || identify === 'nes-rom' || identify === 'n64-rom' || identify === 'nds-rom' || identify === 'snes-rom') {
     candidates.push(() => buildRetroRom(path, identify));
+  } else if (identify === 'ps4-self') {
+    candidates.push(() => buildPs4Ps5(path));
   } else if (identify === 'ps4-encrypted') {
-    throw new Error('This is an encrypted PS4 retail game executable (eboot.bin). Decryption requires Sony\u2019s private keys and is not supported. Homebrew/unencrypted PS4 ELF files are supported.');
+    throw new Error('This is an encrypted PS4 retail game executable (eboot.bin). Decryption requires Sony\u2019s private keys and is not supported. Homebrew (OpenOrbis / fake-SELF) eboot.bin files and plain unencrypted PS4 ELF files are supported.');
   } else if (identify === 'chd') {
     throw new Error('CHD is a compressed disc image. Convert to .iso/.bin first, then open the resulting image.');
   } else {

@@ -1,6 +1,7 @@
 //! One-click decompilation project export.
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecompFunction {
@@ -40,6 +41,8 @@ pub fn generate_decomp_project(
     write("symbol_addrs.txt", &generate_symbol_addrs(functions), &mut files);
     write("undefined_syms.txt", &generate_undefined_syms(functions), &mut files);
     write("splat.yaml", &generate_splat_yaml(binary_name, platform, sections, functions, entry_point, is_little_endian), &mut files);
+    write("functions.json", &generate_functions_json(binary_name, platform, sections, functions, entry_point), &mut files);
+    write("symbols.idc", &generate_symbols_idc(functions), &mut files);
     write("config.toml", &generate_config_toml(binary_name, platform, sections, functions, entry_point, dir), &mut files);
     let mk = generate_makefile(binary_name, platform);
     let bd = format!("{}/build", dir); let _ = std::fs::create_dir_all(&bd);
@@ -109,7 +112,7 @@ pub fn generate_makefile(binary_name: &str, platform: &str) -> String {
 
 pub fn generate_readme(binary_name: &str, platform: &str, functions: &[DecompFunction], sections: &[DecompSection]) -> String {
     let named = functions.iter().filter(|f| f.is_named).count();
-    let mut r = format!("# Decompilation Project: {}\n\n**Platform:** {}\n**Functions:** {} total, {} named, {} unnamed\n\n## Files\n\n- `config.toml` - recompiler configuration\n- `functions.csv` - function table\n- `symbol_addrs.txt` - address to name mappings\n- `undefined_syms.txt` - unnamed function addresses\n- `splat.yaml` - segment splitter config\n- `build/Makefile` - build scaffold\n\n## Getting Started\n\n1. Review `symbol_addrs.txt` for known function names\n2. Name functions in `undefined_syms.txt`\n3. Use `splat.yaml` with splat to split the binary\n4. Start writing C source files in `src/`\n5. Build with `make -C build`\n\n",
+    let mut r = format!("# Decompilation Project: {}\n\n**Platform:** {}\n**Functions:** {} total, {} named, {} unnamed\n\n## Files\n\n- `config.toml` - recompiler configuration\n- `functions.csv` - function table\n- `symbol_addrs.txt` - address to name mappings\n- `undefined_syms.txt` - unnamed function addresses\n- `splat.yaml` - segment splitter config\n- `functions.json` - machine-readable function/section export\n- `symbols.idc` - IDA symbol import script\n- `build/Makefile` - build scaffold\n\n## Getting Started\n\n1. Review `symbol_addrs.txt` for known function names\n2. Name functions in `undefined_syms.txt`\n3. Use `splat.yaml` with splat to split the binary\n4. Start writing C source files in `src/`\n5. Build with `make -C build`\n\n",
         binary_name, platform, functions.len(), named, functions.len() - named);
     if named > 0 {
         r.push_str("## Named Functions\n\n");
@@ -120,4 +123,66 @@ pub fn generate_readme(binary_name: &str, platform: &str, functions: &[DecompFun
     r.push_str("## Sections\n\n| Name | Address | Size | Type |\n|------|---------|------|------|\n");
     for s in sections { r.push_str(&format!("| {} | 0x{:08X} | 0x{:X} | {} |\n", s.name, s.address, s.size, if s.is_code {"code"} else {"data"})); }
     r
+}
+
+/// Emit a machine-readable `functions.json` documenting the whole deployment
+/// (platform, binary, entry point, sections and functions). This is the format
+/// external tooling (build systems, recompilers, dashboards) should consume.
+pub fn generate_functions_json(
+    binary_name: &str, platform: &str, sections: &[DecompSection],
+    functions: &[DecompFunction], entry_point: u64,
+) -> String {
+    let named = functions.iter().filter(|f| f.is_named).count();
+    let secs: Vec<serde_json::Value> = sections
+        .iter()
+        .map(|s| json!({
+            "name": s.name,
+            "address": format!("0x{:08X}", s.address),
+            "address_raw": s.address,
+            "size": s.size,
+            "is_code": s.is_code,
+            "file_offset": format!("0x{:X}", s.file_offset),
+        }))
+        .collect();
+    let funcs: Vec<serde_json::Value> = functions
+        .iter()
+        .map(|f| json!({
+            "name": f.name,
+            "address": format!("0x{:08X}", f.address),
+            "address_raw": f.address,
+            "size": f.size,
+            "is_named": f.is_named,
+            "source": format!("{:?}", f.source),
+        }))
+        .collect();
+    json!({
+        "tool": "Aura Decomp Tool",
+        "platform": platform,
+        "binary_name": binary_name,
+        "entry_point": format!("0x{:08X}", entry_point),
+        "section_count": sections.len(),
+        "function_count": functions.len(),
+        "named_count": named,
+        "sections": secs,
+        "functions": funcs,
+    })
+    .to_string()
+}
+
+/// Emit an IDA Pro `.idc` script that names every known function at its
+/// address. Load via File → IDC file… in IDA.
+pub fn generate_symbols_idc(functions: &[DecompFunction]) -> String {
+    let mut s = String::from("// Auto-generated by Aura Decomp Tool — IDA symbol map\n");
+    s.push_str("// Load with File → IDC file…, or paste into the IDA IDC console.\n");
+    s.push_str("static main() {\n");
+    for f in functions.iter().filter(|f| f.is_named) {
+        // Sanitize the name for the IDC string literal and MakeNameEx.
+        let n = f.name.replace('\\', "_").replace('"', "_");
+        s.push_str(&format!(
+            "    MakeNameEx(0x{:08X}, \"{}\", SN_NOWARN|SN_FORCE|SN_NODEFAULT);\n",
+            f.address, n
+        ));
+    }
+    s.push_str("}\n");
+    s
 }

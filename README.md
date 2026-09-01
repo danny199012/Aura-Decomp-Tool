@@ -68,9 +68,10 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **BE ELF parsing** — Both ELF32 and ELF64 big-endian PowerPC executables (homebrew) are fully parsed: entry point, section headers, code sections.
 - **PowerPC disassembly** — Shared big-endian PPC disassembler. SPU/SPE disassembly is out of scope (different ISA).
 
-### PlayStation 4 & PlayStation 5 (SELF / ELF)
+### PlayStation 4 & PlayStation 5 (SELF / ELF / eboot.bin)
 - **LE ELF64 x86-64 parsing** — Little-endian ELF64 with e_machine = EM_X86_64 (62) for homebrew executables. Sections, entry point, and ORBIS ELF note detection.
 - **SELF wrapper parsing** — Identifies the SCE magic, scans for the embedded ELF, and parses it when unencrypted. Retail PS4/PS5 SELFs are key-gated and return a graceful error.
+- **eboot.bin (fake-SELF) parsing** — The OpenOrbis homebrew container (`4F 15 3D 1D` magic) is parsed directly: header, self-entries, embedded ELF + program headers, and the raw (uncompressed, unencrypted) segment data are mapped into sections for disassembly and export. Encrypted retail eboot.bin files are detected and rejected with a clear key-gated message.
 - **x86-64 disassembly** — 64-bit Intel-syntax disassembly via `iced-x86` (reusing the same crate as the OG Xbox 32-bit decoder, at bitness 64).
 
 ### Cross-Platform SDK Symbol Database
@@ -80,7 +81,8 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - **Tauri commands** — `scan_sdk_symbols(path, platform)` returns matched symbols with descriptions; `get_sdk_db_stats(platform)` returns database coverage per platform.
 
 ### One-Click Decomp Project Export
-- **Complete project scaffold** — Generates a ready-to-build decomp project in one click: `config.toml` (recompiler config), `functions.csv` (Name,Start,End,Size), `symbol_addrs.txt` (address to name mappings), `undefined_syms.txt` (unnamed function addresses), `splat.yaml` (segment splitter config), `build/Makefile` (platform-aware toolchain), and `README.md` (project-specific instructions with named function list and section table).
+- **Complete project scaffold** — Generates a ready-to-build decomp project in one click: `config.toml` (recompiler config), `functions.csv` (Name,Start,End,Size), `symbol_addrs.txt` (address to name mappings), `undefined_syms.txt` (unnamed function addresses), `splat.yaml` (segment splitter config), `functions.json` (machine-readable export), `symbols.idc` (IDA Pro symbol import script), `build/Makefile` (platform-aware toolchain), and `README.md` (project-specific instructions with named function list and section table).
+- **Cross-platform routing** — `export_decomp_project` now routes to each platform's own parser, so PS1/PS2 (MIPS ELF), PS3 (BE ELF/SELF), PS4/PS5 (LE x86-64 ELF / SELF / fake-SELF eboot.bin), Wii U (RPX/RPL), Xbox (XBE), and Xbox 360 (XEX) all export a full scaffold — not just PS2. Wii U imports/exports and Xbox 360 PE exports are carried into the function tables where available.
 - **Platform-aware build** — The Makefile auto-selects the correct cross-compiler toolchain (mips-elf for PS1/PS2, ppu-lv2 for PS3, powerpc-eabi for Wii U/GameCube, x86_64 for PS4/PS5, etc.).
 - **splat-compatible** — The `splat.yaml` output is structured for use with the popular [splat](https://github.com/ethteck/splat) segment splitter, with per-function subsegments in code sections.
 - **Tauri command** — `export_decomp_project(path, platform, output_dir)` writes all files and returns a summary with function counts and named/SDK-matched statistics.
