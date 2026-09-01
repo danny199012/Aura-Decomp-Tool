@@ -13,7 +13,6 @@
       {
         "label": "main",
         "title": "Aura Decomp Tool",
-        "icon": "icons/icon.ico",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
