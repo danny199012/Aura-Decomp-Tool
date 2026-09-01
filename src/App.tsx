@@ -8,6 +8,7 @@ import DisasmView from './components/DisasmView';
 import CallGraphView from './components/CallGraphView';
 import SdkScanView from './components/SdkScanView';
 import ExportView from './components/ExportView';
+import HexView from './components/HexView';
 import Ps1View from './components/Ps1View';
 import ThemeSwitcher from './components/ThemeSwitcher';
 
@@ -23,6 +24,8 @@ function renderView(view: ViewId): JSX.Element {
       return <SdkScanView />;
     case 'export':
       return <ExportView />;
+    case 'hex':
+      return <HexView />;
     case 'ps1':
       return <Ps1View />;
     case 'home':

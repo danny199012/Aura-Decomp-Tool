@@ -9,7 +9,8 @@ export type ViewId =
   | 'callgraph'
   | 'sdk'
   | 'export'
-  | 'ps1';
+  | 'ps1'
+  | 'hex';
 
 interface NavItem {
   id: ViewId;
@@ -22,6 +23,7 @@ const NAV: NavItem[] = [
   { id: 'home', label: 'Home / Open', icon: '𝌆' },
   { id: 'binary', label: 'Binary info', icon: '▤', needsFile: true },
   { id: 'disasm', label: 'Disassembly', icon: '⌗', needsFile: true },
+  { id: 'hex', label: 'Hex view', icon: '0x', needsFile: true },
   { id: 'callgraph', label: 'Call graph', icon: '◉', needsFile: true },
   { id: 'sdk', label: 'SDK scan', icon: '⚗' },
   { id: 'export', label: 'Export project', icon: '⇩' },

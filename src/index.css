@@ -83,27 +83,27 @@ html[data-theme='synthwave'] {
   --hex-column: 38 26 64;
 }
 
-/* ---- Crimson — dark + red accent ------------------------------------------ */
+/* ---- Crimson — black + red accent ------------------------------------------ */
 html[data-theme='crimson'] {
-  --app-base: 20 10 12;            /* near-black, warm  */
-  --app-panel: 32 17 20;
-  --app-panel-soft: 43 23 27;
-  --app-hover: 58 30 34;
-  --app-hover-strong: 76 38 44;
+  --app-base: 8 6 7;              /* almost-black  */
+  --app-panel: 17 12 14;
+  --app-panel-soft: 25 18 20;
+  --app-hover: 40 26 29;
+  --app-hover-strong: 54 34 38;
 
-  --app-border: 60 30 34;
-  --app-border-strong: 96 46 52;
+  --app-border: 46 30 33;
+  --app-border-strong: 82 48 54;
 
-  --fg: 247 240 241;
-  --fg-secondary: 216 200 203;
-  --fg-muted: 168 146 151;
-  --fg-faint: 126 106 111;
+  --fg: 250 246 246;
+  --fg-secondary: 221 208 211;
+  --fg-muted: 172 150 155;
+  --fg-faint: 128 108 113;
 
   --accent: 239 68 68;             /* red-500  */
-  --accent-bright: 248 113 113;    /* red-400  */
+  --accent-bright: 252 118 122;    /* red-400  */
   --accent-strong: 220 38 38;      /* red-600  */
 
-  --hex-column: 43 23 27;
+  --hex-column: 25 18 20;
 }
 
 /* ---- Carbon — clean, professional light ------------------------------- */

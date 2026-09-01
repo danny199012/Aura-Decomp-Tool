@@ -272,18 +272,28 @@ fn open_file(path: String) -> Result<FileOpenResponse, String> {
 
 /// Read up to `max_bytes` of a raw binary file and return it as a list of bytes.
 /// Used when a file is not a valid ELF (e.g. a raw PS-X .bin executable) so the
-/// user can still disassemble it at a chosen base address.
+/// user can still disassemble it at a chosen base address, and by the hex view
+/// to page through the file with `offset`.
 #[tauri::command]
-fn read_raw_binary(path: String, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
+fn read_raw_binary(
+    path: String,
+    max_bytes: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<u8>, String> {
     let p = Path::new(&path);
     if !p.exists() {
         return Err(format!("File not found: {}", path));
     }
     let metadata = fs::metadata(p).map_err(|e| e.to_string())?;
-    let cap = max_bytes.unwrap_or(4 * 1024 * 1024).min(metadata.len() as usize);
+    let start = offset.unwrap_or(0) as u64;
+    let remaining = metadata.len().saturating_sub(start);
+    let cap = max_bytes
+        .unwrap_or(4 * 1024 * 1024)
+        .min(remaining as usize);
     let mut file = fs::File::open(p).map_err(|e| e.to_string())?;
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; cap];
-    use std::io::Read;
     let n = file.read(&mut buf).map_err(|e| e.to_string())?;
     buf.truncate(n);
     Ok(buf)
