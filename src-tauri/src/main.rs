@@ -19,6 +19,7 @@ pub use engine::*;
 mod gamecube;
 mod call_graph;
 mod cfg;
+mod decomp;
 mod decomp_export;
 mod lzx;
 mod ppc_disasm;
@@ -327,6 +328,83 @@ fn get_xrefs(path: String, target: String) -> Result<XrefResult, String> {
         },
     }).collect();
     Ok(XrefResult { target: target_addr, refs })
+}
+
+
+/// Decompile a single function (by entry address) to C-like pseudocode.
+/// This is the Tier 2 MIPS→pseudocode lifter — the headline feature that
+/// closes the biggest gap with Ghidra / Binary Ninja.
+#[derive(Serialize, Debug, Clone)]
+pub struct DecompileResult {
+    pub entry: u32,
+    pub name: String,
+    pub pseudocode: String,
+    pub block_count: usize,
+    pub stmt_count: usize,
+}
+
+#[tauri::command]
+fn decompile_function_cmd(path: String, address: String) -> Result<DecompileResult, String> {
+    let entry = u32::from_str_radix(address.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|e| format!("address must be hex: {e}"))?;
+    let info = parse_elf_file(path)?;
+    let funcs = detect_functions_inner(&info)?;
+    // Build a name map from detected functions + symbols.
+    let mut known: std::collections::BTreeMap<u32, String> = std::collections::BTreeMap::new();
+    for f in &funcs { known.insert(f.start, f.name.clone()); }
+    for s in &info.symbols { known.insert(s.address, s.name.clone()); }
+    // Find the section containing the entry and build the CFG for just that function.
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        if entry >= sec.address && entry < sec_end {
+            let func = funcs.iter().find(|f| f.start == entry);
+            let end = func.map(|f| if f.end > 0 { f.end } else { sec_end }).unwrap_or(sec_end);
+            let cfg = cfg::build_function_cfg(&sec.data, sec.address, entry, end, info.is_little_endian);
+            let name = known.get(&entry).cloned().unwrap_or_else(|| format!("sub_{:08X}", entry));
+            let d = decomp::decompile_function(&cfg, &sec.data, sec.address, info.is_little_endian, &known);
+            return Ok(DecompileResult {
+                entry, name,
+                pseudocode: d.pseudocode,
+                block_count: d.block_count,
+                stmt_count: d.stmt_count,
+            });
+        }
+    }
+    Err(format!("No executable section contains 0x{:08X}", entry))
+}
+
+/// Decompile ALL detected functions and return them as a list (for the
+/// "decompile all" view). Capped at a reasonable limit for UI responsiveness.
+#[derive(Serialize, Debug, Clone)]
+pub struct DecompileAllResult {
+    pub functions: Vec<DecompileResult>,
+    pub total: usize,
+}
+
+#[tauri::command]
+fn decompile_all(path: String, max: Option<usize>) -> Result<DecompileAllResult, String> {
+    let info = parse_elf_file(path)?;
+    let funcs = detect_functions_inner(&info)?;
+    let mut known: std::collections::BTreeMap<u32, String> = std::collections::BTreeMap::new();
+    for f in &funcs { known.insert(f.start, f.name.clone()); }
+    for s in &info.symbols { known.insert(s.address, s.name.clone()); }
+    let limit = max.unwrap_or(500);
+    let mut results = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        for f in funcs.iter().filter(|f| f.start >= sec.address && f.start < sec_end) {
+            if results.len() >= limit { break; }
+            let end = if f.end > 0 { f.end } else { sec_end };
+            let cfg = cfg::build_function_cfg(&sec.data, sec.address, f.start, end, info.is_little_endian);
+            let d = decomp::decompile_function(&cfg, &sec.data, sec.address, info.is_little_endian, &known);
+            results.push(DecompileResult {
+                entry: f.start, name: f.name.clone(),
+                pseudocode: d.pseudocode, block_count: d.block_count, stmt_count: d.stmt_count,
+            });
+        }
+    }
+    let total = results.len();
+    Ok(DecompileAllResult { functions: results, total })
 }
 
 /// Pure inner form of `detect_functions` — shared by the command and the
@@ -762,6 +840,8 @@ async fn main() {
             get_call_graph,
             get_cfg_summary,
             get_xrefs,
+            decompile_function_cmd,
+            decompile_all,
             scan_ps1_symbols,
             ps1_analysis::analyze_ps1_binary,
             ps1_call_graph_enhanced::get_enhanced_call_graph,

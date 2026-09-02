@@ -523,6 +523,34 @@ export async function getXrefs(path: string, target: string): Promise<XrefResult
   return call<XrefResult>('get_xrefs', { path, target });
 }
 
+// ---------------------------------------------------------------------------
+// Tier 2: MIPS -> pseudocode decompiler
+// ---------------------------------------------------------------------------
+
+export interface DecompileResult {
+  entry: number;
+  name: string;
+  pseudocode: string;
+  block_count: number;
+  stmt_count: number;
+}
+
+export interface DecompileAllResult {
+  functions: DecompileResult[];
+  total: number;
+}
+
+/** Decompile a single function (by entry address) to C-like pseudocode. */
+export async function decompileFunction(path: string, address: string): Promise<DecompileResult> {
+  return call<DecompileResult>('decompile_function_cmd', { path, address });
+}
+
+/** Decompile all detected functions (capped at `max`). */
+export async function decompileAll(path: string, max?: number): Promise<DecompileAllResult> {
+  return call<DecompileAllResult>('decompile_all', { path, max });
+}
+
+
 
 export async function exportDecompProject(path: string, platform: string, outputDir: string) {
   return call<{

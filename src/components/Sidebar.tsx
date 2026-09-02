@@ -9,6 +9,7 @@ export type ViewId =
   | 'hex'
   | 'callgraph'
   | 'cfg'
+  | 'decompile'
   | 'sdk'
   | 'export'
   | 'ps1';
@@ -27,6 +28,7 @@ const NAV: NavItem[] = [
   { id: 'hex', label: 'Hex view', icon: '0x', needsFile: true },
   { id: 'callgraph', label: 'Call graph', icon: '◉', needsFile: true },
   { id: 'cfg', label: 'CFG & xrefs', icon: '⧉', needsFile: true },
+  { id: 'decompile', label: 'Decompiler', icon: '⟶', needsFile: true },
   { id: 'sdk', label: 'SDK scan', icon: '⚗' },
   { id: 'export', label: 'Export project', icon: '⇩' },
   { id: 'ps1', label: 'PS1 analysis', icon: '▓' },

@@ -22,6 +22,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/ps1_disasm.rs"] mod ps1_disasm;
 #[path = "../../src-tauri/src/call_graph.rs"] mod call_graph;
 #[path = "../../src-tauri/src/cfg.rs"] mod cfg;
+#[path = "../../src-tauri/src/decomp.rs"] mod decomp;
 #[path = "../../src-tauri/src/sdk_symbols.rs"] mod sdk_symbols;
 #[path = "../../src-tauri/src/sce_symbol_scanner.rs"] mod sce_symbol_scanner;
 #[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
@@ -90,7 +91,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or --at ADDR for xrefs)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or --at ADDR for xrefs/decompile)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +448,76 @@ fn cmd_xrefs(a: &Args) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Decompile command (Tier 2: MIPS -> pseudocode)
+// ---------------------------------------------------------------------------
+
+fn cmd_decompile(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("decompile needs a file path")?;
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let identify = engine::identify_data(&data[..data.len().min(0x10200)]);
+    if !identify.starts_with("elf32") {
+        return Err(format!("decompile currently supports MIPS ELF32 (PS1/PS2); got '{identify}'"));
+    }
+    let info = engine::parse_elf_file_engine(file.to_string())?;
+    let funcs = engine::detect_functions_inner(&info)?;
+    let mut known: std::collections::BTreeMap<u32, String> = std::collections::BTreeMap::new();
+    for f in &funcs { known.insert(f.start, f.name.clone()); }
+    for s in &info.symbols { known.insert(s.address, s.name.clone()); }
+
+    // If --at is given, decompile that one function; otherwise decompile all (capped by --max).
+    if let Some(at) = &a.at {
+        let entry = u32::from_str_radix(at.trim_start_matches("0x").trim_start_matches("0X"), 16)
+            .map_err(|e| format!("--at must be a hex address: {e}"))?;
+        for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+            let sec_end = sec.address + sec.data.len() as u32;
+            if entry >= sec.address && entry < sec_end {
+                let func = funcs.iter().find(|f| f.start == entry);
+                let end = func.map(|f| if f.end > 0 { f.end } else { sec_end }).unwrap_or(sec_end);
+                let cfg = cfg::build_function_cfg(&sec.data, sec.address, entry, end, info.is_little_endian);
+                let d = decomp::decompile_function(&cfg, &sec.data, sec.address, info.is_little_endian, &known);
+                if a.json {
+                    return Ok(serde_json::to_string_pretty(&serde_json::json!({
+                        "entry": d.entry, "pseudocode": d.pseudocode,
+                        "blocks": d.block_count, "statements": d.stmt_count,
+                    })).unwrap_or_default());
+                }
+                return Ok(d.pseudocode);
+            }
+        }
+        return Err(format!("No executable section contains 0x{:08X}", entry));
+    }
+
+    // Decompile all functions (up to --max).
+    let limit = a.max.min(500);
+    let mut results = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        for f in funcs.iter().filter(|f| f.start >= sec.address && f.start < sec_end) {
+            if results.len() >= limit { break; }
+            let end = if f.end > 0 { f.end } else { sec_end };
+            let cfg = cfg::build_function_cfg(&sec.data, sec.address, f.start, end, info.is_little_endian);
+            let d = decomp::decompile_function(&cfg, &sec.data, sec.address, info.is_little_endian, &known);
+            results.push(serde_json::json!({
+                "entry": d.entry, "name": known.get(&f.start).cloned().unwrap_or_default(),
+                "pseudocode": d.pseudocode, "blocks": d.block_count, "statements": d.stmt_count,
+            }));
+        }
+    }
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "functions": results.len(), "results": results,
+        })).unwrap_or_default());
+    }
+    let mut text = format!("Decompiled {} functions from {file}:\n\n", results.len());
+    for r in &results {
+        text.push_str(r["pseudocode"].as_str().unwrap_or(""));
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+
+// ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
 
@@ -463,6 +534,7 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "callgraph" => cmd_callgraph(&a).and_then(|t| Ok(emit(&a.out, t))),
         "cfg" => cmd_cfg(&a).and_then(|t| Ok(emit(&a.out, t))),
         "xrefs" => cmd_xrefs(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "decompile" => cmd_decompile(&a).and_then(|t| Ok(emit(&a.out, t))),
         // Export writes its own files into --out DIR; emit would just try to
         // overwrite the directory, so print the summary text instead.
         "export" => cmd_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),

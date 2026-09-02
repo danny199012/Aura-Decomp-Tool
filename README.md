@@ -40,6 +40,24 @@ The analysis core that makes Aura behave like Ghidra / Binary Ninja instead of a
 - **Indirect-call resolution groundwork** — recognises the canonical PS2 import-thunk pattern (`lw $t9, [import]; jalr $t9`) for later import-target recovery.
 - Available headlessly: `aura-cli cfg <file> --json` and `aura-cli xrefs <file> --at 0x80123456 --json`.
 
+### Decompiler — MIPS → pseudocode (Tier 2)
+The headline feature that closes the biggest gap with Ghidra and Binary Ninja: lifting MIPS disassembly to C-like pseudocode. A pattern-based lifter (like Binary Ninja's first IL pass) that walks the per-function CFG and raises each instruction to typed IR, then renders readable code:
+- **Instruction lifting** — every MIPS instruction (R-type, I-type, J-type, loads/stores, branches, calls) is lifted to a typed IR statement (`Assign`, `BinOp`, `Load`, `Store`, `Call`, `Return`, `CondGoto`, `Goto`).
+- **Control-flow structuring** — block starts that are branch targets get labels; conditional branches become `if (cond) goto label`; `jr $ra` becomes `return`; `jal` becomes `target()`.
+- **Call resolution** — `jal` targets are resolved to function names when known (from the symbol table or SDK scan), otherwise rendered as addresses.
+- **MIPS idioms** — `nop` delay slots are suppressed; `lui` renders as a high-half constant; loads/stores render as `*(u32*)(base + offset)`.
+- **GUI** — "Decompiler" tab: decompile a single function by address, or decompile all detected functions at once.
+- **CLI** — `aura-cli decompile <file> --at 0xADDR` (one function) or `aura-cli decompile <file>` (all, capped by `--max`), with `--json`.
+
+Example output:
+```c
+// Decompiled from 0x80010000 (2 blocks)
+void sub_80010000() {
+  sub_80010010();
+  return;
+}
+```
+
 ### Export & Integration
 - **Ghidra-compatible TOML config** — Generates `[general]` and `[ghidra_export]` sections matching ps2recomp's `ConfigManager::loadConfig`, including `input`, `output`, `ghidra_output`, `single_file_output`, `patch_cop0`, `stubs`, `skip`, and `untracked_stubs`.
 - **CSV export** — Exports function names, start/end addresses (hex), and sizes in the format expected by Ghidra's `ExportPS2Functions.java`.
@@ -306,10 +324,12 @@ aura-cli sdk-scan game.elf --platform PS2 --json
 aura-cli callgraph game.elf
 aura-cli cfg game.elf --json
 aura-cli xrefs game.elf --at 0x80123456 --json
+aura-cli decompile game.elf --at 0x80123456
+aura-cli decompile game.elf --json --max 100
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs), `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs), `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.
