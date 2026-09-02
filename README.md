@@ -282,3 +282,23 @@ Aura-Decomp-Tool/
 ## License
 
 Private — Aura Project
+
+---
+
+## CLI / headless (`aura-cli`)
+
+The same analysis engine is available as a standalone command-line binary, ideal for scripting, CI, and headless servers — with **zero GUI runtime** (it compiles without Tauri/webview).
+
+```
+aura-cli info eboot.bin --json
+aura-cli sections game.elf --json
+aura-cli disasm game.elf --section .text --out out.asm
+aura-cli sdk-scan game.elf --platform PS2 --json
+aura-cli callgraph game.elf
+aura-cli export game.elf --platform PS4 --out ./decomp
+aura-cli formats --json
+```
+
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+
+Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

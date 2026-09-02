@@ -160,13 +160,8 @@ fn is_scannable_section(sec: &crate::ElfSection) -> bool {
     matches!(name, ".strtab" | ".rodata" | ".text" | ".data") || name.starts_with(".str")
 }
 
-/// Tauri command wrapper that parses an ELF and returns its PS1 SDK
-/// symbol-reference matches. Wired into `generate_handler!` in main.rs.
-#[tauri::command]
-pub fn scan_ps1_symbols(path: String) -> Result<Ps1SymbolScanResult, String> {
-    let info = crate::parse_elf_file(path)?;
-    Ok(build_ps1_scan_result(&info.sections))
-}
+/// NOTE: the Tauri command wrapper (`scan_ps1_symbols`) lives in main.rs now;
+/// this module is pure so both the GUI and aura-cli can share it.
 
 /// Build the full scan result from a set of sections.
 pub fn build_ps1_scan_result(sections: &[crate::ElfSection]) -> Ps1SymbolScanResult {
