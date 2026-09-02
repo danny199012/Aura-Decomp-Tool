@@ -83,27 +83,27 @@ html[data-theme='synthwave'] {
   --hex-column: 38 26 64;
 }
 
-/* ---- Crimson — black + red accent ------------------------------------------ */
+/* ---- Crimson — black UI + red accent (like Carbon, but dark) --------------- */
 html[data-theme='crimson'] {
-  --app-base: 8 6 7;              /* almost-black  */
-  --app-panel: 17 12 14;
-  --app-panel-soft: 25 18 20;
-  --app-hover: 40 26 29;
-  --app-hover-strong: 54 34 38;
+  /* Neutral black/gray surfaces — NO color tint. */
+  --app-base: 10 10 11;            /* pure near-black     */
+  --app-panel: 20 20 22;           /* neutral dark panel  */
+  --app-panel-soft: 28 28 31;      /* nested panels / hex */
+  --app-hover: 40 40 44;           /* hover backgrounds   */
+  --app-hover-strong: 52 52 58;    /* active / selected   */
+  --app-border: 38 38 42;          /* hairline borders    */
+  --app-border-strong: 62 62 68;   /* emphasised borders  */
 
-  --app-border: 46 30 33;
-  --app-border-strong: 82 48 54;
+  --fg: 240 240 242;               /* primary text        */
+  --fg-secondary: 208 208 213;
+  --fg-muted: 152 152 160;
+  --fg-faint: 112 112 120;
 
-  --fg: 250 246 246;
-  --fg-secondary: 221 208 211;
-  --fg-muted: 172 150 155;
-  --fg-faint: 128 108 113;
+  --accent: 239 68 68;             /* red-500 (was indigo in Carbon) */
+  --accent-bright: 248 113 113;    /* red-400 */
+  --accent-strong: 220 38 38;      /* red-600 */
 
-  --accent: 239 68 68;             /* red-500  */
-  --accent-bright: 252 118 122;    /* red-400  */
-  --accent-strong: 220 38 38;      /* red-600  */
-
-  --hex-column: 25 18 20;
+  --hex-column: 28 28 31;
 }
 
 /* ---- Carbon — clean, professional light ------------------------------- */
