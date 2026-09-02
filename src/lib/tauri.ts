@@ -550,6 +550,50 @@ export async function decompileAll(path: string, max?: number): Promise<Decompil
   return call<DecompileAllResult>('decompile_all', { path, max });
 }
 
+// ---------------------------------------------------------------------------
+// Tier 3: Project save/load + Lua scripting
+// ---------------------------------------------------------------------------
+
+export interface AuraProject {
+  version: number;
+  binary_path: string;
+  binary_sha1: string | null;
+  binary_name: string | null;
+  annotations: Record<number, { name?: string; comment?: string; signature?: string }>;
+  patches: { address: number; bytes: number[]; note?: string }[];
+  notes: string | null;
+}
+
+export interface ScriptResult {
+  success: boolean;
+  output: string;
+  annotation_count: number;
+  patch_count: number;
+}
+
+/** Save a project (JSON string) to a .aura file. */
+export async function saveProject(projectJson: string, path: string): Promise<void> {
+  return call<void>('save_project', { projectJson, path });
+}
+
+/** Load a .aura project file and return its JSON. */
+export async function loadProject(path: string): Promise<string> {
+  return call<string>('load_project', { path });
+}
+
+/** Create a fresh empty project for a binary. */
+export async function newProject(binaryPath: string, binaryName?: string): Promise<string> {
+  return call<string>('new_project', { binaryPath, binaryName });
+}
+
+/** Run a Lua script against a binary; returns the script result. */
+export async function runAuraScript(
+  binaryPath: string, script: string, projectJson?: string,
+): Promise<ScriptResult> {
+  return call<ScriptResult>('run_aura_script', { binaryPath, script, projectJson });
+}
+
+
 
 
 export async function exportDecompProject(path: string, platform: string, outputDir: string) {

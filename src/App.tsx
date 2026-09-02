@@ -8,6 +8,7 @@ import DisasmView from './components/DisasmView';
 import CallGraphView from './components/CallGraphView';
 import CfgView from './components/CfgView';
 import DecompileView from './components/DecompileView';
+import ProjectView from './components/ProjectView';
 import SdkScanView from './components/SdkScanView';
 import ExportView from './components/ExportView';
 import HexView from './components/HexView';
@@ -26,6 +27,8 @@ function renderView(view: ViewId): JSX.Element {
       return <CfgView />;
     case 'decompile':
       return <DecompileView />;
+    case 'project':
+      return <ProjectView />;
     case 'sdk':
       return <SdkScanView />;
     case 'export':

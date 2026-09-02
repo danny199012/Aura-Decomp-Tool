@@ -58,6 +58,22 @@ void sub_80010000() {
 }
 ```
 
+### Project save/load & scripting (Tier 3)
+The extensibility layer that makes Aura a real reverse-engineering tool rather than a viewer:
+- **`.aura` project format** — a tiny JSON file that layers user annotations (renamed functions, address comments, type signatures) and binary patches on top of a binary. It stores only the deltas, not the binary itself, so projects stay small and the binary can be re-analyzed as the engine improves. This is Ghidra's `.gpr` equivalent.
+- **Lua scripting API** — a Lua 5.4 interpreter (vendored, no system Lua needed) with bindings to the analysis engine: `aura.functions`, `aura.rename(addr, name)`, `aura.comment(addr, text)`, `aura.signature(addr, sig)`, `aura.name_at(addr)`. Scripts can batch-rename functions, propagate comments, or run custom analysis passes — the same automation GhidraScript / Binary Ninja's Python API provide.
+- **GUI** — "Project & script" tab: create/open/save projects, view annotations, and run Lua scripts in an editor.
+- **CLI** — `aura-cli project <file> --section save|apply --out FILE` and `aura-cli script <file> --script script.lua --out project.aura --json`.
+
+Example Lua script:
+```lua
+-- Rename all detected functions by their address
+for _, f in ipairs(aura.functions) do
+  aura.rename(f.addr, "func_" .. string.format("%08X", f.addr))
+end
+return "renamed " .. #aura.functions .. " functions"
+```
+
 ### Export & Integration
 - **Ghidra-compatible TOML config** — Generates `[general]` and `[ghidra_export]` sections matching ps2recomp's `ConfigManager::loadConfig`, including `input`, `output`, `ghidra_output`, `single_file_output`, `patch_cop0`, `stubs`, `skip`, and `untracked_stubs`.
 - **CSV export** — Exports function names, start/end addresses (hex), and sizes in the format expected by Ghidra's `ExportPS2Functions.java`.
@@ -326,10 +342,13 @@ aura-cli cfg game.elf --json
 aura-cli xrefs game.elf --at 0x80123456 --json
 aura-cli decompile game.elf --at 0x80123456
 aura-cli decompile game.elf --json --max 100
+aura-cli project game.elf --section save --out game.aura
+aura-cli project game.elf --section apply --out game.aura --json
+aura-cli script game.elf --script rename.lua --out game.aura --json
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs), `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs/decompile), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

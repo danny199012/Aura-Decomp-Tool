@@ -21,6 +21,7 @@ mod call_graph;
 mod cfg;
 mod decomp;
 mod decomp_export;
+mod project;
 mod lzx;
 mod ppc_disasm;
 mod ps3;
@@ -406,6 +407,64 @@ fn decompile_all(path: String, max: Option<usize>) -> Result<DecompileAllResult,
     let total = results.len();
     Ok(DecompileAllResult { functions: results, total })
 }
+
+// ---------------------------------------------------------------------------
+// Project save/load + scripting (Tier 3)
+// ---------------------------------------------------------------------------
+
+/// Serialize the current in-memory project to JSON (for the GUI to save).
+#[tauri::command]
+fn save_project(project_json: String, path: String) -> Result<(), String> {
+    let proj = project::deserialize_project(&project_json)?;
+    project::save_project_file(&proj, &path)
+}
+
+/// Load a .aura project file from disk and return its JSON.
+#[tauri::command]
+fn load_project(path: String) -> Result<String, String> {
+    let proj = project::load_project_file(&path)?;
+    project::serialize_project(&proj)
+}
+
+/// Create a fresh empty project for a binary path.
+#[tauri::command]
+fn new_project(binary_path: String, binary_name: Option<String>) -> Result<String, String> {
+    let mut p = project::AuraProject::default();
+    p.binary_path = binary_path;
+    p.binary_name = binary_name;
+    project::serialize_project(&p)
+}
+
+/// Run a Lua script against a binary. The script gets the `aura` API
+/// (functions, rename, comment, name_at, etc.) and its edits are returned
+/// as an updated project JSON.
+#[tauri::command]
+fn run_aura_script(
+    binary_path: String, script: String, project_json: Option<String>,
+) -> Result<project::ScriptResult, String> {
+    let info = parse_elf_file(binary_path.clone())?;
+    let funcs = detect_functions_inner(&info)?;
+    let functions: Vec<(u32, String)> = funcs.iter().map(|f| (f.start, f.name.clone())).collect();
+    // First code section for patching context.
+    let (code_data, code_base) = info.sections.iter()
+        .find(|s| (s.flags & 0x4) != 0)
+        .map(|s| (s.data.clone(), s.address))
+        .unwrap_or((vec![], 0));
+    let proj = match project_json {
+        Some(j) => project::deserialize_project(&j)?,
+        None => {
+            let mut p = project::AuraProject::default();
+            p.binary_path = binary_path.clone();
+            p
+        }
+    };
+    let mut ctx = project::ScriptContext {
+        binary_path, project: proj, functions,
+        code_data, code_base, is_le: info.is_little_endian,
+    };
+    Ok(project::run_script(&script, &mut ctx))
+}
+
 
 /// Pure inner form of `detect_functions` — shared by the command and the
 /// config/CSV exporters so they all agree on the function set. When the binary
@@ -842,6 +901,10 @@ async fn main() {
             get_xrefs,
             decompile_function_cmd,
             decompile_all,
+            save_project,
+            load_project,
+            new_project,
+            run_aura_script,
             scan_ps1_symbols,
             ps1_analysis::analyze_ps1_binary,
             ps1_call_graph_enhanced::get_enhanced_call_graph,

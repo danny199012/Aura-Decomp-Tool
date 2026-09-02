@@ -23,6 +23,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/call_graph.rs"] mod call_graph;
 #[path = "../../src-tauri/src/cfg.rs"] mod cfg;
 #[path = "../../src-tauri/src/decomp.rs"] mod decomp;
+#[path = "../../src-tauri/src/project.rs"] mod project;
 #[path = "../../src-tauri/src/sdk_symbols.rs"] mod sdk_symbols;
 #[path = "../../src-tauri/src/sce_symbol_scanner.rs"] mod sce_symbol_scanner;
 #[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
@@ -41,6 +42,8 @@ struct Args {
     section: Option<String>,
     /// Address argument for `xrefs --at 0xADDR` (stored as a hex string).
     at: Option<String>,
+    /// Script path for `script --script PATH`.
+    script: Option<String>,
     platform: Option<String>,
     out: Option<String>,
     max: usize,
@@ -60,6 +63,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--json" => a.json = true,
             "--section" => { a.section = Some(argv.get(i + 1).cloned().ok_or("--section needs a value")?); i += 1; }
             "--at" => { a.at = Some(argv.get(i + 1).cloned().ok_or("--at needs a value (hex address)")?); i += 1; }
+            "--script" => { a.script = Some(argv.get(i + 1).cloned().ok_or("--script needs a value (path)")?); i += 1; }
             "--platform" => { a.platform = Some(argv.get(i + 1).cloned().ok_or("--platform needs a value")?); i += 1; }
             "--out" => { a.out = Some(argv.get(i + 1).cloned().ok_or("--out needs a value")?); i += 1; }
             "--max" => { a.max = argv.get(i + 1).and_then(|x| x.parse::<usize>().ok()).ok_or("--max needs a number")?; i += 1; }
@@ -91,7 +95,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or --at ADDR for xrefs/decompile)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or save|apply action for project)\n  --at ADDR       Hex address (for xrefs/decompile)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +522,93 @@ fn cmd_decompile(a: &Args) -> Result<String, String> {
 
 
 // ---------------------------------------------------------------------------
+// Project + script commands (Tier 3)
+// ---------------------------------------------------------------------------
+
+fn cmd_project(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("project needs a binary file path")?;
+    let out = a.out.as_ref().ok_or("project needs --out PATH (the .aura file)")?;
+    // Sub-action via --section: "save" (create empty) or "apply" (load + merge).
+    let action = a.section.as_deref().unwrap_or("save");
+    match action {
+        "save" => {
+            let mut p = project::AuraProject::default();
+            p.binary_path = file.clone();
+            p.binary_name = Some(std::path::Path::new(file).file_name()
+                .map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+            project::save_project_file(&p, out)?;
+            if a.json {
+                return Ok(serde_json::to_string_pretty(&p).unwrap_or_default());
+            }
+            Ok(format!("Created empty project: {out}"))
+        }
+        "apply" => {
+            let proj = project::load_project_file(out)?;
+            let info = engine::parse_elf_file_engine(file.clone())?;
+            let funcs = engine::detect_functions_inner(&info)?;
+            let func_list: Vec<(u32, String)> = funcs.iter().map(|f| (f.start, f.name.clone())).collect();
+            let merged = project::apply_project_to_functions(&func_list, &proj);
+            if a.json {
+                return Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "binary": file, "project": out,
+                    "annotations": proj.annotations.len(),
+                    "patches": proj.patches.len(),
+                    "functions": merged.iter().map(|(a,n)| serde_json::json!({"addr": a, "name": n})).collect::<Vec<_>>(),
+                })).unwrap_or_default());
+            }
+            let mut text = format!("Applied project {out} to {file}: {} annotations, {} patches\n",
+                proj.annotations.len(), proj.patches.len());
+            for (addr, name) in &merged {
+                if proj.name_at(*addr).is_some() {
+                    text.push_str(&format!("  0x{:08X} -> {}\n", addr, name));
+                }
+            }
+            Ok(text)
+        }
+        other => Err(format!("project action must be save|apply (via --section), got '{other}'")),
+    }
+}
+
+fn cmd_script(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("script needs a binary file path")?;
+    let script_path = a.script.as_ref().ok_or("script needs --script PATH (a .lua file)")?;
+    let script = std::fs::read_to_string(script_path).map_err(|e| format!("read script {script_path}: {e}"))?;
+    let info = engine::parse_elf_file_engine(file.clone())?;
+    let funcs = engine::detect_functions_inner(&info)?;
+    let functions: Vec<(u32, String)> = funcs.iter().map(|f| (f.start, f.name.clone())).collect();
+    let (code_data, code_base) = info.sections.iter()
+        .find(|s| (s.flags & 0x4) != 0)
+        .map(|s| (s.data.clone(), s.address))
+        .unwrap_or((vec![], 0));
+    // Load an existing project if --out points to one (optional).
+    let proj = a.out.as_ref()
+        .and_then(|p| project::load_project_file(p).ok())
+        .unwrap_or_else(|| { let mut p = project::AuraProject::default(); p.binary_path = file.clone(); p });
+    let mut ctx = project::ScriptContext {
+        binary_path: file.clone(), project: proj, functions,
+        code_data, code_base, is_le: info.is_little_endian,
+    };
+    let r = project::run_script(&script, &mut ctx);
+    // Persist the updated project if --out is a path.
+    if r.success && a.out.is_some() {
+        project::save_project_file(&ctx.project, a.out.as_ref().unwrap())
+            .map_err(|e| format!("failed to save project: {e}"))?;
+    }
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "success": r.success, "output": r.output,
+            "annotations": r.annotation_count, "patches": r.patch_count,
+        })).unwrap_or_default());
+    }
+    if r.success {
+        Ok(format!("Script OK: {} ({} annotations, {} patches)\n{}", r.output, r.annotation_count, r.patch_count, r.output))
+    } else {
+        Err(format!("Script failed: {}", r.output))
+    }
+}
+
+
+// ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
 
@@ -535,6 +626,8 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "cfg" => cmd_cfg(&a).and_then(|t| Ok(emit(&a.out, t))),
         "xrefs" => cmd_xrefs(&a).and_then(|t| Ok(emit(&a.out, t))),
         "decompile" => cmd_decompile(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "project" => cmd_project(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "script" => cmd_script(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         // Export writes its own files into --out DIR; emit would just try to
         // overwrite the directory, so print the summary text instead.
         "export" => cmd_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),

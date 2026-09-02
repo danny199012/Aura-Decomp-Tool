@@ -10,6 +10,7 @@ export type ViewId =
   | 'callgraph'
   | 'cfg'
   | 'decompile'
+  | 'project'
   | 'sdk'
   | 'export'
   | 'ps1';
@@ -29,6 +30,7 @@ const NAV: NavItem[] = [
   { id: 'callgraph', label: 'Call graph', icon: '◉', needsFile: true },
   { id: 'cfg', label: 'CFG & xrefs', icon: '⧉', needsFile: true },
   { id: 'decompile', label: 'Decompiler', icon: '⟶', needsFile: true },
+  { id: 'project', label: 'Project & script', icon: '⚙', needsFile: true },
   { id: 'sdk', label: 'SDK scan', icon: '⚗' },
   { id: 'export', label: 'Export project', icon: '⇩' },
   { id: 'ps1', label: 'PS1 analysis', icon: '▓' },
