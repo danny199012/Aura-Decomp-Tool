@@ -123,15 +123,20 @@ fn decode_r3000a(instr: u32, addr: u32) -> (String, Vec<String>, Option<String>)
             ("bne".into(), vec![reg(rs), reg(rt), format!("0x{:08X}", branch_target)], note)
         }
 
-        // ==================== I-TYPE ARITHMETIC / LOGICAL (op=6..15) ====================
-        0x06 => ("addi".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
-        0x07 => ("addiu".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
-        0x08 => ("slti".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
-        0x09 => ("sltiu".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
-        0x0A => ("andi".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
-        0x0B => ("ori".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
-        0x0C => ("xori".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
-        0x0D => ("lui".into(), vec![reg(rt), format!("0x{:X}", imm16)], None),
+        // ==================== I-TYPE ARITHMETIC / LOGICAL (op=8..15) ====================
+        // MIPS I primary opcodes (bits 31-26). Verified against the MIPS ISA:
+        // 0x08 ADDI, 0x09 ADDIU, 0x0A SLTI, 0x0B SLTIU, 0x0C ANDI, 0x0D ORI,
+        // 0x0E XORI, 0x0F LUI. The previous table was shifted by 2 from 0x08
+        // onward and omitted LUI entirely, which mis-decoded every addi/addiu/
+        // slti/sltiu/andi/ori/xori/lui in a PS1 binary.
+        0x08 => ("addi".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
+        0x09 => ("addiu".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
+        0x0A => ("slti".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
+        0x0B => ("sltiu".into(), vec![reg(rt), reg(rs), signed_imm.to_string()], None),
+        0x0C => ("andi".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
+        0x0D => ("ori".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
+        0x0E => ("xori".into(), vec![reg(rt), reg(rs), format!("0x{:X}", imm16)], None),
+        0x0F => ("lui".into(), vec![reg(rt), format!("0x{:X}", imm16)], None),
 
         // ==================== COPROCESSOR (op=16..23) ====================
         0x10 => decode_cop0(rs, rt, rd, shamt, funct),
@@ -150,7 +155,7 @@ fn decode_r3000a(instr: u32, addr: u32) -> (String, Vec<String>, Option<String>)
             ("bnel".into(), vec![reg(rs), reg(rt), format!("0x{:08X}", branch_target)], note)
         }
 
-        // ==================== LOAD (op=32..47) ====================
+        // ==================== LOAD (op=32..38) ====================
         0x20 => load_store("lb", rt, rs, signed_imm),
         0x21 => load_store("lh", rt, rs, signed_imm),
         0x22 => load_store("lwl", rt, rs, signed_imm),
@@ -159,7 +164,17 @@ fn decode_r3000a(instr: u32, addr: u32) -> (String, Vec<String>, Option<String>)
         0x25 => load_store("lhu", rt, rs, signed_imm),
         0x26 => load_store("lwr", rt, rs, signed_imm),
 
-        // ==================== STORE (op=48..55) ====================
+        // ==================== STORE (op=40..46) ====================
+        // MIPS I: 0x28 SB, 0x29 SH, 0x2A SWL, 0x2B SW, 0x2E SWR.
+        // These were previously missing, so every store in a PS1 binary
+        // fell through to the .word "unknown opcode" arm.
+        0x28 => load_store("sb", rt, rs, signed_imm),
+        0x29 => load_store("sh", rt, rs, signed_imm),
+        0x2A => load_store("swl", rt, rs, signed_imm),
+        0x2B => load_store("sw", rt, rs, signed_imm),
+        0x2E => load_store("swr", rt, rs, signed_imm),
+
+        // ==================== ATOMIC / COP1 (op=48/49/56/57) ====================
         0x30 => {
             let note = memory_note_for_base(rs, signed_imm);
             ("ll".into(), vec![reg(rt), format!("{}({})", signed_imm, reg(rs))], note)
@@ -333,8 +348,10 @@ mod tests {
 
     #[test]
     fn decodes_add() {
-        // add $v0, $a0, $a1 = 0x24508021 (op=0, rs=4, rt=5, rd=2, funct=0x20)
-        let lines = disasm_words(&[0x2450_8021], 0x2000_0000);
+        // add $v0, $a0, $a1 = op=0, rs=4, rt=5, rd=2, funct=0x20
+        //   (0<<26)|(4<<21)|(5<<16)|(2<<11)|(0x20<<0)
+        let instr: u32 = (4u32 << 21) | (5u32 << 16) | (2u32 << 11) | 0x20;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "add");
         assert_eq!(lines[0].operands, vec!["$v0".to_string(), "$a0".to_string(), "$a1".to_string()]);
@@ -342,8 +359,9 @@ mod tests {
 
     #[test]
     fn decodes_lw() {
-        // lw $v0, 4($sp) = op=0x23, rs=29, rt=2, imm=4 → 0xAFA2_0004
-        let lines = disasm_words(&[0xAFA2_0004], 0x2000_0000);
+        // lw $v0, 4($sp) = op=0x23, rs=29, rt=2, imm=4
+        let instr: u32 = (0x23u32 << 26) | (29u32 << 21) | (2u32 << 16) | 4;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "lw");
         assert_eq!(lines[0].operands, vec!["$v0".to_string(), "4($sp)".to_string()]);
@@ -351,8 +369,9 @@ mod tests {
 
     #[test]
     fn decodes_sw() {
-        // sw $a0, 8($fp) = op=0x2B, rs=31, rt=4, imm=8 → 0xAFE4_0008
-        let lines = disasm_words(&[0xAFE4_0008], 0x2000_0000);
+        // sw $a0, 8($fp) = op=0x2B, rs=30 ($fp), rt=4, imm=8
+        let instr: u32 = (0x2Bu32 << 26) | (30u32 << 21) | (4u32 << 16) | 8;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "sw");
         assert_eq!(lines[0].operands, vec!["$a0".to_string(), "8($fp)".to_string()]);
@@ -360,8 +379,9 @@ mod tests {
 
     #[test]
     fn decodes_beq() {
-        // beq $v0, $zero, +4 = op=0x04, rs=2, rt=0, imm=1 → 0x4400_0001
-        let lines = disasm_words(&[0x4400_0001], 0x2000_0000);
+        // beq $v0, $zero, +4 = op=0x04, rs=2, rt=0, imm=1
+        let instr: u32 = (0x04u32 << 26) | (2u32 << 21) | (0u32 << 16) | 1;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "beq");
         // branch target = 0x20000000 + 4 + (1 << 2) = 0x20000008
@@ -370,8 +390,9 @@ mod tests {
 
     #[test]
     fn decodes_jal() {
-        // jal target: op=3, target_field = 0x0000_0001 → addr+4 & F0000000 | (1<<2)
-        let lines = disasm_words(&[0x0800_0001], 0x2000_0000);
+        // jal target: op=3, target_field = 1 → (addr+4 & 0xF0000000) | (1<<2)
+        let instr: u32 = (3u32 << 26) | 1;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "jal");
         // jaddr = (0x20000004 & 0xF0000000) | (1 << 2) = 0x20000004
@@ -380,8 +401,9 @@ mod tests {
 
     #[test]
     fn decodes_cop1_lwc1() {
-        // lwc1 $f0, 0($a0) = op=0x31, rs=4, rt=0, imm=0 → 0x7420_0000
-        let lines = disasm_words(&[0x7420_0000], 0x2000_0000);
+        // lwc1 $f0, 0($a0) = op=0x31, rs=4, rt=0, imm=0
+        let instr: u32 = (0x31u32 << 26) | (4u32 << 21) | (0u32 << 16) | 0;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "lwc1");
     }
@@ -395,8 +417,9 @@ mod tests {
 
     #[test]
     fn decodes_sll() {
-        // sll $t0, $a0, 5 = op=0, rs=0, rt=4, rd=8, shamt=5, funct=0 → 0x00A4_4020
-        let lines = disasm_words(&[0x00A4_4020], 0x2000_0000);
+        // sll $t0, $a0, 5 = op=0, rs=0, rt=4, rd=8, shamt=5, funct=0x00
+        let instr: u32 = (4u32 << 16) | (8u32 << 11) | (5u32 << 6) | 0x00;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "sll");
         assert_eq!(lines[0].operands, vec!["$t0".to_string(), "$a0".to_string(), "5".to_string()]);
@@ -423,8 +446,9 @@ mod tests {
 
     #[test]
     fn decodes_bgez() {
-        // bgez $a0, +8 = op=1, rs=4, rt=1, imm=2 → 0x4501_0002
-        let lines = disasm_words(&[0x4501_0002], 0x2000_0000);
+        // bgez $a0, +8 = op=1 (REGIMM), rs=4, rt=1, imm=2
+        let instr: u32 = (1u32 << 26) | (4u32 << 21) | (1u32 << 16) | 2;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "bgez");
     }
@@ -448,8 +472,8 @@ mod tests {
 
     #[test]
     fn decodes_andi() {
-        // andi $v0, $a0, 0xFF = op=0x0A, rs=4, rt=2, imm16=0xFF → 0x3C02_00FF | (0x0A << 26)
-        let instr: u32 = (0x0Au32 << 26) | (4u32 << 21) | (2u32 << 16) | 0xFF;
+        // andi $v0, $a0, 0xFF = op=0x0C, rs=4, rt=2, imm16=0xFF
+        let instr: u32 = (0x0Cu32 << 26) | (4u32 << 21) | (2u32 << 16) | 0xFF;
         let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "andi");
@@ -466,8 +490,11 @@ mod tests {
 
     #[test]
     fn decodes_multiple_instructions() {
-        let words = [0x3C02_3000u32, 0x2450_8021u32, 0xAFA2_0004u32];
-        let lines = disasm_words(&words, 0x2000_0000);
+        // lui $v0, 0x3000 ; add $v0, $a0, $a1 ; lw $v0, 4($sp)
+        let lui: u32 = (0x0Fu32 << 26) | (2u32 << 16) | 0x3000;
+        let add: u32 = (4u32 << 21) | (5u32 << 16) | (2u32 << 11) | 0x20;
+        let lw: u32 = (0x23u32 << 26) | (29u32 << 21) | (2u32 << 16) | 4;
+        let lines = disasm_words(&[lui, add, lw], 0x2000_0000);
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].mnemonic, "lui");
         assert_eq!(lines[1].mnemonic, "add");
@@ -539,18 +566,18 @@ mod tests {
 
     #[test]
     fn disasm_line_is_serializable() {
-        let lines = disasm_words(&[0x2450_8021], 0x2000_0000);
+        // add $v0, $a0, $a1
+        let instr: u32 = (4u32 << 21) | (5u32 << 16) | (2u32 << 11) | 0x20;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         let json = serde_json::to_string(&lines).expect("must serialize");
         assert!(json.contains("\"mnemonic\":\"add\""));
     }
 
     #[test]
     fn decodes_beq_with_memory_note() {
-        // beq to an address in GPU range: craft a branch target that lands there.
-        // base_addr = 0x2000_0000, we want target = 0x3000_0000 (GPU).
-        // target = addr + 4 + (imm << 2) → imm = (target - addr - 4) / 4
-        // But that's a huge offset; instead just verify the note mechanism works.
-        let lines = disasm_words(&[0x4400_0001], 0x2000_0000);
+        // beq $v0, $zero, +4 = op=0x04, rs=2, rt=0, imm=1
+        let instr: u32 = (0x04u32 << 26) | (2u32 << 21) | (0u32 << 16) | 1;
+        let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines[0].mnemonic, "beq");
     }
 
@@ -844,8 +871,8 @@ mod tests {
 
     #[test]
     fn decodes_addiu() {
-        // addiu $v0, $a0, -8 = op=7, rs=4, rt=2, imm=-8 → (7 << 26) | (4 << 21) | (2 << 16) | 0xFFF8
-        let instr: u32 = (7u32 << 26) | (4u32 << 21) | (2u32 << 16) | 0xFFF8;
+        // addiu $v0, $a0, -8 = op=0x09, rs=4, rt=2, imm=-8 (0xFFF8)
+        let instr: u32 = (0x09u32 << 26) | (4u32 << 21) | (2u32 << 16) | 0xFFF8;
         let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "addiu");
@@ -853,8 +880,8 @@ mod tests {
 
     #[test]
     fn decodes_slti() {
-        // slti $v0, $a0, 5 = op=8, rs=4, rt=2, imm=5 → (8 << 26) | (4 << 21) | (2 << 16) | 5
-        let instr: u32 = (8u32 << 26) | (4u32 << 21) | (2u32 << 16) | 5;
+        // slti $v0, $a0, 5 = op=0x0A, rs=4, rt=2, imm=5
+        let instr: u32 = (0x0Au32 << 26) | (4u32 << 21) | (2u32 << 16) | 5;
         let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "slti");
@@ -862,8 +889,8 @@ mod tests {
 
     #[test]
     fn decodes_sltiu() {
-        // sltiu $v0, $a0, 5 = op=9, rs=4, rt=2, imm=5 → (9 << 26) | (4 << 21) | (2 << 16) | 5
-        let instr: u32 = (9u32 << 26) | (4u32 << 21) | (2u32 << 16) | 5;
+        // sltiu $v0, $a0, 5 = op=0x0B, rs=4, rt=2, imm=5
+        let instr: u32 = (0x0Bu32 << 26) | (4u32 << 21) | (2u32 << 16) | 5;
         let lines = disasm_words(&[instr], 0x2000_0000);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].mnemonic, "sltiu");
