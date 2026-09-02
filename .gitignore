@@ -4,6 +4,7 @@ dist/
 
 # Rust/Tauri build artifacts
 src-tauri/target/
+cli/target/
 
 # OS
 .DS_Store

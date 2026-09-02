@@ -484,6 +484,46 @@ export async function interactiveCallGraph(path: string): Promise<import('../typ
   return call<import('../types').InteractiveCallGraph>('get_interactive_call_graph', { path });
 }
 
+// ---------------------------------------------------------------------------
+// Tier 1: CFG + cross-references (recursive-descent analysis, like Ghidra/BN)
+// ---------------------------------------------------------------------------
+
+export interface CfgFuncSummary {
+  entry: number;
+  blocks: number;
+  edges: number;
+  returns: boolean;
+}
+
+export interface CfgSummary {
+  functions: CfgFuncSummary[];
+  total_blocks: number;
+  total_edges: number;
+  returning_functions: number;
+  xref_targets: number;
+}
+
+export interface XrefEntry {
+  from: number;
+  kind: 'call' | 'jump' | 'branch' | 'data';
+}
+
+export interface XrefResult {
+  target: number;
+  refs: XrefEntry[];
+}
+
+/** Per-function CFG summary (basic blocks + edges + return detection). */
+export async function getCfgSummary(path: string): Promise<CfgSummary> {
+  return call<CfgSummary>('get_cfg_summary', { path });
+}
+
+/** Cross-references to an address — the "X" navigation primitive from Ghidra/BN. */
+export async function getXrefs(path: string, target: string): Promise<XrefResult> {
+  return call<XrefResult>('get_xrefs', { path, target });
+}
+
+
 export async function exportDecompProject(path: string, platform: string, outputDir: string) {
   return call<{
     project_dir: string; files_written: string[]; function_count: number; named_count: number;

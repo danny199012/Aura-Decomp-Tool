@@ -31,6 +31,15 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 - Enriches external targets with import names via dynamic relocations (`R_MIPS_26`).
 - Identifies unreachable functions (potential stubs, interrupt handlers, or dead code).
 
+### Control-Flow Graph & Cross-References (Tier 1)
+The analysis core that makes Aura behave like Ghidra / Binary Ninja instead of a flat linear-sweep disassembler:
+- **Recursive-descent basic-block construction** — per-function CFGs built by walking from each entry, splitting at branches/jumps/returns, and following direct targets. Respects the MIPS branch-delay slot (the instruction after a branch stays in the branch's block, exactly as it executes).
+- **Edge kinds** — fallthrough, branch-taken, branch-not-taken, unconditional jump, and call — the same structure Ghidra/BN use for decompilation and analysis.
+- **Return detection** — flags functions that reach a `jr $ra`, distinguishing real functions from tail-calls/stubs.
+- **Global cross-reference index** — for every address, the list of instructions that call/jump/branch to it. This is the "X" navigation primitive Ghidra/BN users rely on. Available in the GUI ("CFG & xrefs" tab) and the CLI (`aura-cli xrefs <file> --at 0xADDR`).
+- **Indirect-call resolution groundwork** — recognises the canonical PS2 import-thunk pattern (`lw $t9, [import]; jalr $t9`) for later import-target recovery.
+- Available headlessly: `aura-cli cfg <file> --json` and `aura-cli xrefs <file> --at 0x80123456 --json`.
+
 ### Export & Integration
 - **Ghidra-compatible TOML config** — Generates `[general]` and `[ghidra_export]` sections matching ps2recomp's `ConfigManager::loadConfig`, including `input`, `output`, `ghidra_output`, `single_file_output`, `patch_cop0`, `stubs`, `skip`, and `untracked_stubs`.
 - **CSV export** — Exports function names, start/end addresses (hex), and sizes in the format expected by Ghidra's `ExportPS2Functions.java`.
@@ -295,10 +304,12 @@ aura-cli sections game.elf --json
 aura-cli disasm game.elf --section .text --out out.asm
 aura-cli sdk-scan game.elf --platform PS2 --json
 aura-cli callgraph game.elf
+aura-cli cfg game.elf --json
+aura-cli xrefs game.elf --at 0x80123456 --json
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs), `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

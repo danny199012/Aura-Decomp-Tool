@@ -6,11 +6,12 @@ export type ViewId =
   | 'home'
   | 'binary'
   | 'disasm'
+  | 'hex'
   | 'callgraph'
+  | 'cfg'
   | 'sdk'
   | 'export'
-  | 'ps1'
-  | 'hex';
+  | 'ps1';
 
 interface NavItem {
   id: ViewId;
@@ -25,6 +26,7 @@ const NAV: NavItem[] = [
   { id: 'disasm', label: 'Disassembly', icon: '⌗', needsFile: true },
   { id: 'hex', label: 'Hex view', icon: '0x', needsFile: true },
   { id: 'callgraph', label: 'Call graph', icon: '◉', needsFile: true },
+  { id: 'cfg', label: 'CFG & xrefs', icon: '⧉', needsFile: true },
   { id: 'sdk', label: 'SDK scan', icon: '⚗' },
   { id: 'export', label: 'Export project', icon: '⇩' },
   { id: 'ps1', label: 'PS1 analysis', icon: '▓' },

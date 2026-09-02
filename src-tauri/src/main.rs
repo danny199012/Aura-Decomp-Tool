@@ -18,6 +18,7 @@ pub use engine::*;
 // Multi-platform backends: shared PowerPC decoder plus Xbox/360/GameCube/Genesis.
 mod gamecube;
 mod call_graph;
+mod cfg;
 mod decomp_export;
 mod lzx;
 mod ppc_disasm;
@@ -240,6 +241,92 @@ fn get_call_graph(path: String) -> Result<CallGraph, String> {
     let raw = collect_call_edges(&info.sections, info.is_little_endian);
     let graph = build_call_graph(raw, &funcs);
     Ok(enrich_call_graph_with_relocs(graph, &info.relocations))
+}
+
+/// Per-function CFG summary for the UI: block/edge counts and whether each
+/// function returns. This is the recursive-descent analysis (Tier 1) that
+/// Ghidra/BN do — basic blocks + edges, not a flat linear sweep.
+#[derive(Serialize, Debug, Clone)]
+pub struct CfgSummary {
+    pub functions: Vec<CfgFuncSummary>,
+    pub total_blocks: usize,
+    pub total_edges: usize,
+    pub returning_functions: usize,
+    pub xref_targets: usize,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct CfgFuncSummary {
+    pub entry: u32,
+    pub blocks: usize,
+    pub edges: usize,
+    pub returns: bool,
+}
+
+#[tauri::command]
+fn get_cfg_summary(path: String) -> Result<CfgSummary, String> {
+    let info = parse_elf_file(path)?;
+    let funcs = detect_functions_inner(&info)?;
+    let mut cfgs = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        for f in funcs.iter().filter(|f| f.start >= sec.address && f.start < sec_end) {
+            let end = if f.end > 0 { f.end } else { sec_end };
+            cfgs.push(cfg::build_function_cfg(&sec.data, sec.address, f.start, end, info.is_little_endian));
+        }
+    }
+    let xrefs = cfg::build_xref_index(&cfgs);
+    let functions = cfgs.iter().map(|c| CfgFuncSummary {
+        entry: c.entry, blocks: c.blocks.len(), edges: c.edges.len(), returns: c.returns,
+    }).collect();
+    Ok(CfgSummary {
+        functions,
+        total_blocks: cfgs.iter().map(|c| c.blocks.len()).sum(),
+        total_edges: cfgs.iter().map(|c| c.edges.len()).sum(),
+        returning_functions: cfgs.iter().filter(|c| c.returns).count(),
+        xref_targets: xrefs.len(),
+    })
+}
+
+/// Cross-references to an address — the "X" navigation primitive from
+/// Ghidra/BN. Returns every instruction that calls/jumps/branches to `target`.
+#[derive(Serialize, Debug, Clone)]
+pub struct XrefResult {
+    pub target: u32,
+    pub refs: Vec<XrefEntry>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct XrefEntry {
+    pub from: u32,
+    pub kind: String,
+}
+
+#[tauri::command]
+fn get_xrefs(path: String, target: String) -> Result<XrefResult, String> {
+    let target_addr = u32::from_str_radix(target.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|e| format!("target must be a hex address: {e}"))?;
+    let info = parse_elf_file(path)?;
+    let funcs = detect_functions_inner(&info)?;
+    let mut cfgs = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        for f in funcs.iter().filter(|f| f.start >= sec.address && f.start < sec_end) {
+            let end = if f.end > 0 { f.end } else { sec_end };
+            cfgs.push(cfg::build_function_cfg(&sec.data, sec.address, f.start, end, info.is_little_endian));
+        }
+    }
+    let xrefs = cfg::build_xref_index(&cfgs);
+    let refs = xrefs.refs_to(target_addr).iter().map(|r| XrefEntry {
+        from: r.from,
+        kind: match r.kind {
+            cfg::XrefKind::Call => "call".into(),
+            cfg::XrefKind::Jump => "jump".into(),
+            cfg::XrefKind::Branch => "branch".into(),
+            cfg::XrefKind::Data => "data".into(),
+        },
+    }).collect();
+    Ok(XrefResult { target: target_addr, refs })
 }
 
 /// Pure inner form of `detect_functions` — shared by the command and the
@@ -673,6 +760,8 @@ async fn main() {
             disassemble_section,
             detect_functions,
             get_call_graph,
+            get_cfg_summary,
+            get_xrefs,
             scan_ps1_symbols,
             ps1_analysis::analyze_ps1_binary,
             ps1_call_graph_enhanced::get_enhanced_call_graph,

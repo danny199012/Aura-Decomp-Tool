@@ -21,6 +21,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/ps1_memory_map.rs"] mod ps1_memory_map;
 #[path = "../../src-tauri/src/ps1_disasm.rs"] mod ps1_disasm;
 #[path = "../../src-tauri/src/call_graph.rs"] mod call_graph;
+#[path = "../../src-tauri/src/cfg.rs"] mod cfg;
 #[path = "../../src-tauri/src/sdk_symbols.rs"] mod sdk_symbols;
 #[path = "../../src-tauri/src/sce_symbol_scanner.rs"] mod sce_symbol_scanner;
 #[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
@@ -37,6 +38,8 @@ struct Args {
     command: String,
     file: Option<String>,
     section: Option<String>,
+    /// Address argument for `xrefs --at 0xADDR` (stored as a hex string).
+    at: Option<String>,
     platform: Option<String>,
     out: Option<String>,
     max: usize,
@@ -55,6 +58,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "-V" | "--version" => a.version = true,
             "--json" => a.json = true,
             "--section" => { a.section = Some(argv.get(i + 1).cloned().ok_or("--section needs a value")?); i += 1; }
+            "--at" => { a.at = Some(argv.get(i + 1).cloned().ok_or("--at needs a value (hex address)")?); i += 1; }
             "--platform" => { a.platform = Some(argv.get(i + 1).cloned().ok_or("--platform needs a value")?); i += 1; }
             "--out" => { a.out = Some(argv.get(i + 1).cloned().ok_or("--out needs a value")?); i += 1; }
             "--max" => { a.max = argv.get(i + 1).and_then(|x| x.parse::<usize>().ok()).ok_or("--max needs a number")?; i += 1; }
@@ -86,7 +90,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or --at ADDR for xrefs)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +349,104 @@ fn cmd_export(a: &Args) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// CFG + xref commands (Tier 1: recursive-descent analysis, like Ghidra/BN)
+// ---------------------------------------------------------------------------
+
+/// Build per-function CFGs for a MIPS ELF32 (PS1/PS2). Returns the list of
+/// (entry, block_count, edge_count, returns) plus the global xref index.
+fn build_cfgs_for_elf(file: &str) -> Result<(Vec<cfg::FunctionCfg>, cfg::XrefIndex, engine::ElfFileInfo), String> {
+    let info = engine::parse_elf_file_engine(file.to_string())?;
+    let funcs = engine::detect_functions_inner(&info)?;
+    // Build (start, end) pairs per executable section.
+    let mut cfgs = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let sec_end = sec.address + sec.data.len() as u32;
+        for f in funcs.iter().filter(|f| f.start >= sec.address && f.start < sec_end) {
+            let end = if f.end > 0 { f.end } else { sec_end };
+            cfgs.push(cfg::build_function_cfg(&sec.data, sec.address, f.start, end, info.is_little_endian));
+        }
+    }
+    let xrefs = cfg::build_xref_index(&cfgs);
+    Ok((cfgs, xrefs, info))
+}
+
+fn cmd_cfg(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("cfg needs a file path")?;
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let identify = engine::identify_data(&data[..data.len().min(0x10200)]);
+    if !identify.starts_with("elf32") {
+        return Err(format!("cfg currently supports MIPS ELF32 (PS1/PS2); got '{identify}'"));
+    }
+    let (cfgs, xrefs, info) = build_cfgs_for_elf(file)?;
+    let total_blocks: usize = cfgs.iter().map(|c| c.blocks.len()).sum();
+    let total_edges: usize = cfgs.iter().map(|c| c.edges.len()).sum();
+    let returning = cfgs.iter().filter(|c| c.returns).count();
+
+    if a.json {
+        let summary = serde_json::json!({
+            "file": file,
+            "functions": cfgs.len(),
+            "total_blocks": total_blocks,
+            "total_edges": total_edges,
+            "returning_functions": returning,
+            "xref_targets": xrefs.len(),
+            "entry_point": info.entry_point,
+            "per_function": cfgs.iter().map(|c| serde_json::json!({
+                "entry": c.entry,
+                "blocks": c.blocks.len(),
+                "edges": c.edges.len(),
+                "returns": c.returns,
+            })).collect::<Vec<_>>(),
+        });
+        return Ok(serde_json::to_string_pretty(&summary).unwrap_or_default());
+    }
+
+    let mut text = format!("CFG analysis of {file}: {} functions, {} blocks, {} edges ({} returning)\n",
+        cfgs.len(), total_blocks, total_edges, returning);
+    text.push_str(&format!("Cross-references: {} distinct targets\n\n", xrefs.len()));
+    for c in cfgs.iter().take(200) {
+        text.push_str(&format!("  func 0x{:08X}: {} blocks, {} edges, {}\n",
+            c.entry, c.blocks.len(), c.edges.len(), if c.returns { "returns" } else { "no-return" }));
+    }
+    if cfgs.len() > 200 { text.push_str(&format!("  ... and {} more\n", cfgs.len() - 200)); }
+    Ok(text)
+}
+
+fn cmd_xrefs(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("xrefs needs a file path")?;
+    let at = a.at.as_ref().or(a.section.as_ref()).ok_or("xrefs needs --at ADDR (the address to look up references to)")?;
+    let target = u32::from_str_radix(at.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|e| format!("--at must be a hex address, e.g. 0x80123456: {e}"))?;
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let identify = engine::identify_data(&data[..data.len().min(0x10200)]);
+    if !identify.starts_with("elf32") {
+        return Err(format!("xrefs currently supports MIPS ELF32 (PS1/PS2); got '{identify}'"));
+    }
+    let (_cfgs, xrefs, _info) = build_cfgs_for_elf(file)?;
+    let refs = xrefs.refs_to(target);
+    if a.json {
+        let v: Vec<_> = refs.iter().map(|r| serde_json::json!({
+            "from": r.from, "to": r.to, "kind": format!("{:?}", r.kind).to_lowercase()
+        })).collect();
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({ "target": target, "refs": v })).unwrap_or_default());
+    }
+    if refs.is_empty() {
+        return Ok(format!("No cross-references to 0x{:08X} in {file}.\n", target));
+    }
+    let mut text = format!("Cross-references to 0x{:08X} ({}):\n", target, refs.len());
+    for r in refs {
+        let kind = match r.kind {
+            cfg::XrefKind::Call => "call",
+            cfg::XrefKind::Jump => "jump",
+            cfg::XrefKind::Branch => "branch",
+            cfg::XrefKind::Data => "data",
+        };
+        text.push_str(&format!("  0x{:08X}  {}\n", r.from, kind));
+    }
+    Ok(text)
+}
+
+// ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
 
@@ -359,6 +461,8 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "disasm" => cmd_disasm(&a).and_then(|t| Ok(emit(&a.out, t))),
         "sdk-scan" => cmd_sdk_scan(&a).and_then(|t| Ok(emit(&a.out, t))),
         "callgraph" => cmd_callgraph(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "cfg" => cmd_cfg(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "xrefs" => cmd_xrefs(&a).and_then(|t| Ok(emit(&a.out, t))),
         // Export writes its own files into --out DIR; emit would just try to
         // overwrite the directory, so print the summary text instead.
         "export" => cmd_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
