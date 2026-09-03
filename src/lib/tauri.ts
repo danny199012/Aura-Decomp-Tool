@@ -569,6 +569,7 @@ export interface ScriptResult {
   output: string;
   annotation_count: number;
   patch_count: number;
+  project_json: string;
 }
 
 /** Save a project (JSON string) to a .aura file. */
@@ -591,6 +592,66 @@ export async function runAuraScript(
   binaryPath: string, script: string, projectJson?: string,
 ): Promise<ScriptResult> {
   return call<ScriptResult>('run_aura_script', { binaryPath, script, projectJson });
+}
+
+// ---------------------------------------------------------------------------
+// Tier 4: Search / strings / patching (UX polish)
+// ---------------------------------------------------------------------------
+
+export interface FoundString {
+  address: number;
+  offset: number;
+  text: string;
+  wide: boolean;
+  byte_len: number;
+}
+
+export interface StringScanResult {
+  strings: FoundString[];
+  count: number;
+  section: string;
+}
+
+export interface SearchHit {
+  offset: number;
+  address: number | null;
+}
+
+export interface SearchResult {
+  hits: SearchHit[];
+  count: number;
+  kind: string;
+}
+
+export interface StringXref {
+  from: number;
+  to: number;
+  text: string;
+}
+
+export interface StringXrefResult {
+  xrefs: StringXref[];
+  count: number;
+}
+
+/** Scan a binary (whole file or a named section) for printable strings. */
+export async function scanStrings(path: string, section?: string, minLen?: number): Promise<StringScanResult> {
+  return call<StringScanResult>('scan_strings', { path, section, minLen });
+}
+
+/** Search a binary for a hex pattern, ASCII string, or 32-bit immediate. */
+export async function searchBinary(path: string, kind: string, value: string, ignoreCase?: boolean): Promise<SearchResult> {
+  return call<SearchResult>('search_binary', { path, kind, value, ignoreCase });
+}
+
+/** Find which code instructions reference string addresses (MIPS lui+addiu). */
+export async function getStringXrefs(path: string): Promise<StringXrefResult> {
+  return call<StringXrefResult>('get_string_xrefs', { path });
+}
+
+/** Apply a project's byte patches and write the patched binary to outPath. */
+export async function exportPatchedBinary(path: string, projectJson: string, outPath: string): Promise<number> {
+  return call<number>('export_patched_binary', { path, projectJson, outPath });
 }
 
 

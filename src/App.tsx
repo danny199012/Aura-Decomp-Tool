@@ -9,6 +9,7 @@ import CallGraphView from './components/CallGraphView';
 import CfgView from './components/CfgView';
 import DecompileView from './components/DecompileView';
 import ProjectView from './components/ProjectView';
+import SearchView from './components/SearchView';
 import SdkScanView from './components/SdkScanView';
 import ExportView from './components/ExportView';
 import HexView from './components/HexView';
@@ -29,6 +30,8 @@ function renderView(view: ViewId): JSX.Element {
       return <DecompileView />;
     case 'project':
       return <ProjectView />;
+    case 'search':
+      return <SearchView />;
     case 'sdk':
       return <SdkScanView />;
     case 'export':

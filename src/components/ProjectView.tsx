@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Chip, ErrorBox, Panel, Spinner, Stat, StatGrid } from './ui';
 import { useFile } from '../lib/FileContext';
 import { newProject, loadProject, saveProject, runAuraScript } from '../lib/tauri';
@@ -9,16 +9,46 @@ export default function ProjectView() {
   const { summary } = useFile();
   const [path, setPath] = useState(summary?.path ?? '');
   const [project, setProject] = useState<AuraProject | null>(null);
+  // Undo/redo history: snapshots of project JSON.
+  const [past, setPast] = useState<string[]>([]);
+  const [future, setFuture] = useState<string[]>([]);
   const [projectPath, setProjectPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [script, setScript] = useState('-- Rename the first function\nfor _, f in ipairs(aura.functions) do\n  aura.rename(f.addr, "func_" .. string.format("%08X", f.addr))\n  break\nend\nreturn "done"');
   const [scriptResult, setScriptResult] = useState<ScriptResult | null>(null);
 
+  /** Replace the current project and record history. `record=true` pushes the
+   * old value onto the undo stack (skips the very first load). */
+  const commitProject = (next: AuraProject, record: boolean) => {
+    if (record && project) {
+      setPast((p) => [...p.slice(-99), JSON.stringify(project)]);
+      setFuture([]);
+    }
+    setProject(next);
+  };
+
+  const undo = () => {
+    if (past.length === 0 || !project) return;
+    setFuture((f) => [...f.slice(-99), JSON.stringify(project)]);
+    const prev = JSON.parse(past[past.length - 1]) as AuraProject;
+    setPast((p) => p.slice(0, -1));
+    setProject(prev);
+  };
+
+  const redo = () => {
+    if (future.length === 0 || !project) return;
+    setPast((p) => [...p.slice(-99), JSON.stringify(project)]);
+    const next = JSON.parse(future[future.length - 1]) as AuraProject;
+    setFuture((f) => f.slice(0, -1));
+    setProject(next);
+  };
+
   const createNew = async () => {
     if (!path) return;
     setBusy(true); setError(null);
     try {
+      setPast([]); setFuture([]);
       setProject(JSON.parse(await newProject(path, summary?.filename)));
       setScriptResult(null);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
@@ -28,6 +58,7 @@ export default function ProjectView() {
     if (!projectPath) return;
     setBusy(true); setError(null);
     try {
+      setPast([]); setFuture([]);
       setProject(JSON.parse(await loadProject(projectPath)));
       setScriptResult(null);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
@@ -46,11 +77,32 @@ export default function ProjectView() {
     try {
       const r = await runAuraScript(path, script, project ? JSON.stringify(project) : undefined);
       setScriptResult(r);
+      if (r.success) {
+        // Adopt the backend's updated project (annotations/patches the script made).
+        const updated = JSON.parse(r.project_json) as AuraProject;
+        commitProject(updated, true);
+      }
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
 
   const annotationCount = project ? Object.keys(project.annotations).length : 0;
   const patchCount = project ? project.patches.length : 0;
+  const canUndo = past.length > 0 && !!project;
+  const canRedo = future.length > 0 && !!project;
+
+  // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Shift+Z = redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [past, future, project]);
 
   return (
     <div className="space-y-4">
@@ -77,6 +129,8 @@ export default function ProjectView() {
           <Button variant="ghost" disabled={busy || !path} onClick={createNew}>New</Button>
           <Button variant="ghost" disabled={busy || !projectPath} onClick={open}>Open</Button>
           <Button variant="primary" disabled={busy || !project || !projectPath} onClick={save}>Save</Button>
+          <Button variant="ghost" disabled={!canUndo} onClick={undo}>↩ Undo</Button>
+          <Button variant="ghost" disabled={!canRedo} onClick={redo}>↪ Redo</Button>
         </div>
         {busy && <Spinner label="Working…" />}
         {error && <ErrorBox message={error} />}

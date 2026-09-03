@@ -74,6 +74,17 @@ end
 return "renamed " .. #aura.functions .. " functions"
 ```
 
+### Search, strings & patching (Tier 4)
+The day-to-day UX polish that makes Aura pleasant to use:
+- **String scan** — finds printable ASCII and UTF-16LE (wide) strings across the binary, with their addresses and offsets. This is Ghidra's "Defined Strings" window equivalent.
+- **Binary search** — locate hex byte patterns, ASCII strings (optionally case-insensitive), or 32-bit immediate values (endianness-aware) anywhere in the file.
+- **String xrefs** — finds code that references each string via the canonical MIPS `lui`+`addiu`/`ori` address-build idiom, producing a "references to this string" list.
+- **Binary patching** — apply a project's byte patches and write a patched binary (`aura-cli patch-export`), or record patches from a Lua script with `aura.patch(addr, {bytes}, note)`.
+- **Annotation overlay** — the Disassembly view can load a `.aura` project and show your renames/comments in an "Annotation" column next to each instruction.
+- **Undo/redo** — the Project & script tab keeps a history stack of your edits with Undo/Redo buttons and `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z` shortcuts.
+- **GUI** — "Search & strings" tab: strings table, pattern/string/immediate search, and string-xrefs view.
+- **CLI** — `aura-cli strings <file> --json`, `aura-cli search <file> --section pattern|string|immediate --at VALUE`, `aura-cli string-xrefs <file> --json`, `aura-cli patch-export <file> --out project.aura --section patched.elf`.
+
 ### Export & Integration
 - **Ghidra-compatible TOML config** — Generates `[general]` and `[ghidra_export]` sections matching ps2recomp's `ConfigManager::loadConfig`, including `input`, `output`, `ghidra_output`, `single_file_output`, `patch_cop0`, `stubs`, `skip`, and `untracked_stubs`.
 - **CSV export** — Exports function names, start/end addresses (hex), and sizes in the format expected by Ghidra's `ExportPS2Functions.java`.
@@ -345,10 +356,15 @@ aura-cli decompile game.elf --json --max 100
 aura-cli project game.elf --section save --out game.aura
 aura-cli project game.elf --section apply --out game.aura --json
 aura-cli script game.elf --script rename.lua --out game.aura --json
+aura-cli strings game.elf --json
+aura-cli search game.elf --section string --at "HELLO"
+aura-cli search game.elf --section pattern --at 0x0F 0x00
+aura-cli string-xrefs game.elf --json
+aura-cli patch-export game.elf --out game.aura --section game_patched.elf
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME`, `--at ADDR` (for xrefs/decompile), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

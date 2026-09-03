@@ -11,6 +11,7 @@ export type ViewId =
   | 'cfg'
   | 'decompile'
   | 'project'
+  | 'search'
   | 'sdk'
   | 'export'
   | 'ps1';
@@ -31,6 +32,7 @@ const NAV: NavItem[] = [
   { id: 'cfg', label: 'CFG & xrefs', icon: '⧉', needsFile: true },
   { id: 'decompile', label: 'Decompiler', icon: '⟶', needsFile: true },
   { id: 'project', label: 'Project & script', icon: '⚙', needsFile: true },
+  { id: 'search', label: 'Search & strings', icon: '⌕', needsFile: true },
   { id: 'sdk', label: 'SDK scan', icon: '⚗' },
   { id: 'export', label: 'Export project', icon: '⇩' },
   { id: 'ps1', label: 'PS1 analysis', icon: '▓' },

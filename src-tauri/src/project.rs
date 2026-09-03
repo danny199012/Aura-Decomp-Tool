@@ -176,6 +176,8 @@ pub struct ScriptResult {
     pub annotation_count: usize,
     /// Number of patches after the script ran.
     pub patch_count: usize,
+    /// The updated project, serialized to JSON (so callers can persist it).
+    pub project_json: String,
 }
 
 /// Run a Lua script with access to the analysis engine.
@@ -265,6 +267,33 @@ pub fn run_script(source: &str, ctx: &mut ScriptContext) -> ScriptResult {
     }) {
         let _ = aura.set("signature", f);
     }
+// aura.patch(addr, bytes_table, note?) -> records a byte patch.
+    let patch_edits = match lua.create_table() { Ok(t) => t, Err(e) => return err_result(format!("{e}")) };
+    let patch_edits_ref = patch_edits.clone();
+    if let Ok(f) = lua.create_function(move |lua, (addr, bytes, note): (u32, LuaValue, Option<String>)| {
+        // bytes must be an array table of integers.
+        let mut buf: Vec<u8> = Vec::new();
+        if let LuaValue::Table(t) = bytes {
+            for pair in t.pairs::<LuaValue, LuaValue>() {
+                if let Ok((_, v)) = pair {
+                    match v {
+                        LuaValue::Integer(i) => buf.push(i as u8),
+                        LuaValue::Number(n) => buf.push(n as u8),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if let Ok(pt) = lua.create_table() {
+            let _ = pt.set("addr", addr);
+            let _ = pt.set("bytes", buf);
+            let _ = pt.set("note", note);
+            let _ = patch_edits_ref.push(pt);
+        }
+        Ok(())
+    }) {
+        let _ = aura.set("patch", f);
+    }
 
     let _ = lua.globals().set("aura", aura);
 
@@ -281,17 +310,23 @@ pub fn run_script(source: &str, ctx: &mut ScriptContext) -> ScriptResult {
 
     // Drain the edits table into ctx.project.
     let _ = drain_edits(&lua, &edits, &mut ctx.project);
+    // Drain the patch edits into ctx.project.patches.
+    let _ = drain_patch_edits(&lua, &patch_edits, &mut ctx.project);
 
     ScriptResult {
         success: true,
         output,
         annotation_count: ctx.project.annotations.len(),
         patch_count: ctx.project.patches.len(),
+        project_json: serialize_project(&ctx.project).unwrap_or_else(|_| "{}".into()),
     }
 }
 
 fn err_result(msg: String) -> ScriptResult {
-    ScriptResult { success: false, output: msg, annotation_count: 0, patch_count: 0 }
+    ScriptResult {
+        success: false, output: msg, annotation_count: 0, patch_count: 0,
+        project_json: "{}".into(),
+    }
 }
 
 
@@ -312,6 +347,22 @@ fn drain_edits(_lua: &Lua, edits: &LuaTable, proj: &mut AuraProject) -> mlua::Re
             "signature" => proj.signature(addr, value),
             _ => {}
         }
+    }
+    Ok(())
+}
+/// Walk the patch-edits list (array of {addr=, bytes=[...], note=}) and apply
+/// them to the project's patch list.
+fn drain_patch_edits(_lua: &Lua, edits: &LuaTable, proj: &mut AuraProject) -> mlua::Result<()> {
+    for pair in edits.pairs::<LuaValue, LuaTable>() {
+        let (_, t) = pair?;
+        let addr: u32 = match t.get("addr")? {
+            LuaValue::Integer(i) => i as u32,
+            LuaValue::Number(n) => n as u32,
+            _ => continue,
+        };
+        let bytes: Vec<u8> = t.get("bytes")?;
+        let note: Option<String> = t.get("note")?;
+        proj.patch(addr, bytes, note);
     }
     Ok(())
 }

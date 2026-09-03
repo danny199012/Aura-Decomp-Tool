@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, ErrorBox, Panel, Spinner } from './ui';
 import { useFile } from '../lib/FileContext';
-import { disassemblerFor, call } from '../lib/tauri';
+import { disassemblerFor, call, loadProject } from '../lib/tauri';
 import type { DisassembledInstruction, FunctionEntry } from '../types';
 import { bytesToHex, hex32 } from '../lib/format';
+import type { AuraProject } from '../lib/tauri';
 
 export default function DisasmView() {
   const { summary } = useFile();
@@ -14,6 +15,9 @@ export default function DisasmView() {
   const [funcs, setFuncs] = useState<FunctionEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Project overlay: load a .aura project to annotate addresses.
+  const [projectPath, setProjectPath] = useState('');
+  const [project, setProject] = useState<AuraProject | null>(null);
   // Windowing: render only the first `visible` instructions so large sections
   // (thousands of rows) don't freeze the UI. Grows in chunks via "Show more".
   const PAGE = 2000;
@@ -37,6 +41,14 @@ export default function DisasmView() {
     }
   }, [summary]);
 
+  const loadProjectOverlay = async () => {
+    if (!projectPath) return;
+    setError(null);
+    try {
+      setProject(JSON.parse(await loadProject(projectPath)));
+    } catch (e) { setError(String(e)); setProject(null); }
+  };
+
   const disassemble = async (sectionName: string) => {
     if (!summary) return;
     setBusy(true);
@@ -52,6 +64,12 @@ export default function DisasmView() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const annFor = (ins: DisassembledInstruction) => {
+    if (!project) return null;
+    const a = project.annotations[ins.address];
+    return a ?? null;
   };
 
   if (!summary) {
@@ -107,6 +125,20 @@ export default function DisasmView() {
         {error && <ErrorBox message={error} />}
       </Panel>
 
+      <Panel title="Project overlay (optional)">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex-1 min-w-[240px]">
+            <span className="mb-1 block text-xs font-medium text-fg-muted">.aura project file</span>
+            <input className="w-full rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
+              value={projectPath} placeholder="/path/to/game.aura" onChange={(e) => setProjectPath(e.target.value)} />
+          </label>
+          <Button variant="ghost" disabled={!projectPath} onClick={loadProjectOverlay}>
+            {project ? 'Reload annotations' : 'Load annotations'}
+          </Button>
+          {project && <span className="pb-2 text-xs text-fg-muted">{Object.keys(project.annotations).length} annotations</span>}
+        </div>
+      </Panel>
+
       {funcs.length > 0 && (
         <Panel title={`Detected functions (${funcs.length})`}>
           <div className="grid max-h-56 grid-cols-1 gap-x-4 overflow-auto sm:grid-cols-2 lg:grid-cols-3">
@@ -148,19 +180,31 @@ export default function DisasmView() {
                     <th className="px-3 py-2 text-left">Bytes</th>
                     <th className="px-3 py-2 text-left">Instruction</th>
                     <th className="px-3 py-2 text-left">Operands</th>
+                    <th className="px-3 py-2 text-left">Annotation</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {insns.slice(0, visible).map((ins, i) => (
-                    <tr key={i} className="border-t border-app-border/40 hover:bg-app-hover">
-                      <td className="px-3 py-1 text-accent-bright">{hex32(ins.address)}</td>
-                      <td className="px-3 py-1 text-fg-muted">
-                        {ins.bytes && ins.bytes.length ? bytesToHex(ins.bytes) : '—'}
-                      </td>
-                      <td className="px-3 py-1 font-semibold text-fg">{ins.mnemonic || ins.text || '—'}</td>
-                      <td className="px-3 py-1 text-fg-secondary">{ins.operands ?? ''}</td>
-                    </tr>
-                  ))}
+                  {insns.slice(0, visible).map((ins, i) => {
+                    const ann = annFor(ins);
+                    return (
+                      <tr key={i} className="border-t border-app-border/40 hover:bg-app-hover">
+                        <td className="px-3 py-1 text-accent-bright">{hex32(ins.address)}</td>
+                        <td className="px-3 py-1 text-fg-muted">
+                          {ins.bytes && ins.bytes.length ? bytesToHex(ins.bytes) : '—'}
+                        </td>
+                        <td className="px-3 py-1 font-semibold text-fg">{ins.mnemonic || ins.text || '—'}</td>
+                        <td className="px-3 py-1 text-fg-secondary">{ins.operands ?? ''}</td>
+                        <td className="px-3 py-1">
+                          {ann ? (
+                            <div className="text-xs">
+                              {ann.name && <span className="mr-2 font-semibold text-accent-bright">{ann.name}</span>}
+                              {ann.comment && <span className="text-fg-muted">{ann.comment}</span>}
+                            </div>
+                          ) : ''}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

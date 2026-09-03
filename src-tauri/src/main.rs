@@ -22,6 +22,7 @@ mod cfg;
 mod decomp;
 mod decomp_export;
 mod project;
+mod search;
 mod lzx;
 mod ppc_disasm;
 mod ps3;
@@ -465,6 +466,160 @@ fn run_aura_script(
     Ok(project::run_script(&script, &mut ctx))
 }
 
+// ---------------------------------------------------------------------------
+// Search + strings + patch export (Tier 4 UX polish)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Debug, Clone)]
+pub struct StringScanResult {
+    pub strings: Vec<search::FoundString>,
+    pub count: usize,
+    pub section: String,
+}
+
+/// Scan a binary for printable strings (ASCII + wide). If `section` is given
+/// (ELF), scan that section's data; otherwise the whole file is scanned with
+/// the raw-binary base address.
+#[tauri::command]
+fn scan_strings(path: String, section: Option<String>, min_len: Option<usize>) -> Result<StringScanResult, String> {
+    let data = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let min = min_len.unwrap_or(4);
+    if let Some(sec_name) = section.as_ref() {
+        if let Ok(info) = parse_elf_file(path) {
+            if let Some(sec) = info.sections.iter().find(|s| s.name == *sec_name) {
+                let strings = search::collect_strings(&sec.data, sec.address, min);
+                let count = strings.len();
+                return Ok(StringScanResult { strings, count, section: sec_name.clone() });
+            }
+        }
+    }
+    let base = identify_base(&data);
+    let strings = search::collect_strings(&data, base, min);
+    let count = strings.len();
+    let section_name = section.unwrap_or_else(|| "*whole*".into());
+    Ok(StringScanResult { strings, count, section: section_name })
+}
+
+/// The conventional base address for raw data (PS-X EXE / raw bin).
+fn identify_base(data: &[u8]) -> u32 {
+    if data.len() >= 4 && data[0..4] == [0x7f, b'E', b'L', b'F'] {
+        0
+    } else {
+        0x0001_0000 // PS-X EXE default
+    }
+}
+
+/// Search a binary for a pattern/string/immediate.
+#[derive(Serialize, Debug, Clone)]
+pub struct SearchResult {
+    pub hits: Vec<search::Hit>,
+    pub count: usize,
+    pub kind: String,
+}
+
+/// `kind` is one of "pattern" (hex bytes), "string" (ASCII),
+/// or "immediate" (a 32-bit word, endianness-aware).
+#[tauri::command]
+fn search_binary(path: String, kind: String, value: String, ignore_case: Option<bool>) -> Result<SearchResult, String> {
+    let data = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let is_le = elf_is_le(&data);
+    let base = identify_base(&data);
+    let hits = match kind.as_str() {
+        "pattern" => {
+            let bytes = parse_hex(&value).map_err(|e| format!("pattern must be hex bytes: {e}"))?;
+            search::find_pattern(&data, &bytes, Some(base))
+        }
+        "string" => search::find_string(&data, &value, ignore_case.unwrap_or(false), Some(base)),
+        "immediate" => {
+            let v = parse_u32(&value).map_err(|e| format!("immediate must be a number: {e}"))?;
+            search::find_immediate(&data, v, is_le, Some(base), 4)
+        }
+        other => return Err(format!("unknown search kind '{other}'; use pattern|string|immediate")),
+    };
+    let count = hits.len();
+    Ok(SearchResult { hits, count, kind })
+}
+
+/// Get string xrefs (MIPS lui+addiu idiom) for a binary's code section.
+#[derive(Serialize, Debug, Clone)]
+pub struct StringXrefResult {
+    pub xrefs: Vec<search::StringXref>,
+    pub count: usize,
+}
+
+#[tauri::command]
+fn get_string_xrefs(path: String) -> Result<StringXrefResult, String> {
+    let info = parse_elf_file(path)?;
+    let mut xrefs = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let all_strings: Vec<search::FoundString> = info.sections.iter()
+            .filter(|s| (s.flags & 0x4) == 0)
+            .flat_map(|s| search::collect_strings(&s.data, s.address, 4))
+            .collect();
+        let x = search::string_xrefs_mips(&sec.data, sec.address, info.is_little_endian, &all_strings);
+        xrefs.extend(x);
+    }
+    let count = xrefs.len();
+    Ok(StringXrefResult { xrefs, count })
+}
+
+/// Apply project patches to the binary and write to `out_path`.
+#[tauri::command]
+fn export_patched_binary(path: String, project_json: String, out_path: String) -> Result<u64, String> {
+    let proj = project::deserialize_project(&project_json)?;
+    let mut data = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let mut applied = 0u64;
+    for p in &proj.patches {
+        let off = p.address as usize;
+        if off + p.bytes.len() <= data.len() {
+            data[off..off + p.bytes.len()].copy_from_slice(&p.bytes);
+            applied += 1;
+        }
+    }
+    let n = search::export_bytes(&data, &out_path)?;
+    let _ = applied;
+    Ok(n)
+}
+
+// --- helpers ---
+
+fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    let t = t.replace(&[' ', '_', ',', '\t'][..], "");
+    if t.len() % 2 != 0 {
+        return Err("odd number of hex digits".into());
+    }
+    let bytes = t.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = hex_nibble(bytes[i]).ok_or("bad hex digit")?;
+        let lo = hex_nibble(bytes[i + 1]).ok_or("bad hex digit")?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_u32(s: &str) -> Result<u32, String> {
+    let t = s.trim();
+    if t.starts_with("0x") || t.starts_with("0X") {
+        u32::from_str_radix(&t[2..], 16).map_err(|e| e.to_string())
+    } else {
+        t.parse::<u32>().map_err(|e| e.to_string())
+    }
+}
+
+fn elf_is_le(data: &[u8]) -> bool {
+    data.len() >= 6 && data[0..4] == [0x7f, b'E', b'L', b'F'] && data[5] == 1
+}
 
 /// Pure inner form of `detect_functions` — shared by the command and the
 /// config/CSV exporters so they all agree on the function set. When the binary
@@ -905,6 +1060,10 @@ async fn main() {
             load_project,
             new_project,
             run_aura_script,
+            scan_strings,
+            search_binary,
+            get_string_xrefs,
+            export_patched_binary,
             scan_ps1_symbols,
             ps1_analysis::analyze_ps1_binary,
             ps1_call_graph_enhanced::get_enhanced_call_graph,

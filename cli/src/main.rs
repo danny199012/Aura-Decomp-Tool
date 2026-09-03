@@ -24,6 +24,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/cfg.rs"] mod cfg;
 #[path = "../../src-tauri/src/decomp.rs"] mod decomp;
 #[path = "../../src-tauri/src/project.rs"] mod project;
+#[path = "../../src-tauri/src/search.rs"] mod search;
 #[path = "../../src-tauri/src/sdk_symbols.rs"] mod sdk_symbols;
 #[path = "../../src-tauri/src/sce_symbol_scanner.rs"] mod sce_symbol_scanner;
 #[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
@@ -95,7 +96,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or save|apply action for project)\n  --at ADDR       Hex address (for xrefs/decompile)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +607,182 @@ fn cmd_script(a: &Args) -> Result<String, String> {
         Err(format!("Script failed: {}", r.output))
     }
 }
+// ---------------------------------------------------------------------------
+// Search / strings / patch-export commands (Tier 4 UX polish)
+// ---------------------------------------------------------------------------
 
+fn cmd_strings(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("strings needs a file path")?;
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let min = if a.max > 0 && a.max < 4 { 4 } else if a.max > 0 && a.max != 5000 { a.max } else { 4 };
+    let info = engine::parse_elf_file_engine(file.clone()).ok();
+    if let Some(info) = info {
+        let mut all = Vec::new();
+        for sec in &info.sections {
+            let s = search::collect_strings(&sec.data, sec.address, min);
+            all.extend(s);
+        }
+        if a.json {
+            return Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "file": file, "count": all.len(),
+                "strings": all.iter().map(|s| serde_json::json!({
+                    "address": s.address, "offset": s.offset, "text": s.text,
+                    "wide": s.wide, "byte_len": s.byte_len,
+                })).collect::<Vec<_>>(),
+            })).unwrap_or_default());
+        }
+        let mut text = format!("Strings in {file}: {} found\n", all.len());
+        for s in all.iter().take(500) {
+            let w = if s.wide { " (wide)" } else { "" };
+            text.push_str(&format!("  0x{:08X}  {}{}\n", s.address, s.text, w));
+        }
+        if all.len() > 500 { text.push_str(&format!("  ... and {} more\n", all.len() - 500)); }
+        return Ok(text);
+    }
+    let base = 0x0001_0000u32;
+    let all = search::collect_strings(&data, base, min);
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "file": file, "count": all.len(),
+            "strings": all.iter().map(|s| serde_json::json!({
+                "address": s.address, "offset": s.offset, "text": s.text,
+                "wide": s.wide, "byte_len": s.byte_len,
+            })).collect::<Vec<_>>(),
+        })).unwrap_or_default());
+    }
+    let mut text = format!("Strings in {file} (raw): {} found\n", all.len());
+    for s in all.iter().take(500) {
+        text.push_str(&format!("  0x{:08X}  {}\n", s.address, s.text));
+    }
+    Ok(text)
+}
+
+fn cmd_search(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("search needs a file path")?;
+    let kind = a.section.as_ref().ok_or("search needs --section pattern|string|immediate")?.clone();
+    let value = a.at.as_ref().ok_or("search needs --at VALUE (hex pattern / string / number)")?.clone();
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let is_le = data.len() >= 6 && data[0..4] == [0x7f, b'E', b'L', b'F'] && data[5] == 1;
+    let base = 0x0001_0000u32;
+    let hits = match kind.as_str() {
+        "pattern" => {
+            let bytes = parse_hex_bytes(&value).map_err(|e| format!("bad hex pattern: {e}"))?;
+            search::find_pattern(&data, &bytes, Some(base))
+        }
+        "string" => search::find_string(&data, &value, false, Some(base)),
+        "immediate" => {
+            let v = parse_u32_value(&value).map_err(|e| format!("bad immediate: {e}"))?;
+            search::find_immediate(&data, v, is_le, Some(base), 4)
+        }
+        other => return Err(format!("unknown search kind '{other}'; use pattern|string|immediate")),
+    };
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "file": file, "kind": kind, "count": hits.len(),
+            "hits": hits.iter().map(|h| serde_json::json!({
+                "offset": h.offset, "address": h.address,
+            })).collect::<Vec<_>>(),
+        })).unwrap_or_default());
+    }
+    let mut text = format!("Search [{kind}] '{value}' in {file}: {} hits\n", hits.len());
+    for h in hits.iter().take(100) {
+        match h.address {
+            Some(a) => text.push_str(&format!("  0x{:08X}  (offset 0x{:X})\n", a, h.offset)),
+            None => text.push_str(&format!("  offset 0x{:X}\n", h.offset)),
+        }
+    }
+    if hits.len() > 100 { text.push_str(&format!("  ... and {} more\n", hits.len() - 100)); }
+    Ok(text)
+}
+
+fn cmd_patch_export(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("patch-export needs a binary file path")?;
+    let project_path = a.out.as_ref().ok_or("patch-export needs --out PROJECT_FILE (a .aura project)")?;
+    let out_bin = a.section.as_ref().ok_or("patch-export needs --section OUT_BINARY (the patched file to write)")?;
+    let proj = project::load_project_file(project_path)
+        .map_err(|e| format!("load project {project_path}: {e}"))?;
+    let data = std::fs::read(file).map_err(|e| format!("read {file}: {e}"))?;
+    let mut patched = data.clone();
+    let mut applied = 0usize;
+    for p in &proj.patches {
+        let off = p.address as usize;
+        if off + p.bytes.len() <= patched.len() {
+            patched[off..off + p.bytes.len()].copy_from_slice(&p.bytes);
+            applied += 1;
+        }
+    }
+    search::export_bytes(&patched, out_bin)?;
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "binary": file, "project": project_path, "output": out_bin,
+            "patches_applied": applied, "patches_total": proj.patches.len(),
+            "bytes_written": patched.len(),
+        })).unwrap_or_default());
+    }
+    Ok(format!("Patched {file} -> {out_bin}: {applied}/{} patches applied ({} bytes)\n",
+        proj.patches.len(), patched.len()))
+}
+fn cmd_string_xrefs(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("string-xrefs needs a file path")?;
+    let info = engine::parse_elf_file_engine(file.clone())?;
+    let mut xrefs: Vec<search::StringXref> = Vec::new();
+    for sec in info.sections.iter().filter(|s| (s.flags & 0x4) != 0) {
+        let all_strings: Vec<search::FoundString> = info.sections.iter()
+            .filter(|s| (s.flags & 0x4) == 0)
+            .flat_map(|s| search::collect_strings(&s.data, s.address, 4))
+            .collect();
+        let x = search::string_xrefs_mips(&sec.data, sec.address, info.is_little_endian, &all_strings);
+        xrefs.extend(x);
+    }
+    if a.json {
+        return Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "file": file, "count": xrefs.len(),
+            "xrefs": xrefs.iter().map(|x| serde_json::json!({
+                "from": x.from, "to": x.to, "text": x.text,
+            })).collect::<Vec<_>>(),
+        })).unwrap_or_default());
+    }
+    if xrefs.is_empty() {
+        return Ok(format!("No MIPS lui+addiu string references found in {file}.\n"));
+    }
+    let mut text = format!("String xrefs in {file}: {} found\n", xrefs.len());
+    for x in xrefs.iter().take(200) {
+        text.push_str(&format!("  0x{:08X} -> 0x{:08X}  {}\n", x.from, x.to, x.text));
+    }
+    if xrefs.len() > 200 { text.push_str(&format!("  ... and {} more\n", xrefs.len() - 200)); }
+    Ok(text)
+}
+
+fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
+    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X").replace(&[' ', '_'][..], "");
+    if t.len() % 2 != 0 { return Err("odd hex length".into()); }
+    let bytes = t.as_bytes();
+    let mut out = Vec::new();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = nib(bytes[i]).ok_or("bad hex")?;
+        let lo = nib(bytes[i + 1]).ok_or("bad hex")?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn nib(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_u32_value(s: &str) -> Result<u32, String> {
+    let t = s.trim();
+    if t.starts_with("0x") || t.starts_with("0X") {
+        u32::from_str_radix(&t[2..], 16).map_err(|e| e.to_string())
+    } else {
+        t.parse::<u32>().map_err(|e| e.to_string())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Main dispatch
@@ -628,6 +804,10 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "decompile" => cmd_decompile(&a).and_then(|t| Ok(emit(&a.out, t))),
         "project" => cmd_project(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "script" => cmd_script(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "strings" => cmd_strings(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "search" => cmd_search(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "string-xrefs" => cmd_string_xrefs(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "patch-export" => cmd_patch_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         // Export writes its own files into --out DIR; emit would just try to
         // overwrite the directory, so print the summary text instead.
         "export" => cmd_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
