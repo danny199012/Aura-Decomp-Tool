@@ -1,37 +1,14 @@
 //! aura-cli — command-line interface for Aura Decomp Tool.
 //!
-//! Shares the exact analysis engine with the GUI binary: it #[path]-includes
-//! `engine.rs` (the moved core from src-tauri/src/main.rs) and the pure
-//! platform modules, so behavior matches the GUI one-to-one.
-#![allow(dead_code, clippy::too_many_arguments)]
+//! This is a thin binary shell: it parses arguments and dispatches to the
+//! `aura_cli` library (`lib.rs`), which `#[path]`-includes the exact same
+//! analysis modules the Tauri GUI uses — so behavior matches the GUI
+//! one-to-one. All analysis logic and module wiring lives in the library;
+//! this file holds only arg parsing + command dispatch.
 
-#[path = "../../src-tauri/src/engine.rs"]
-mod engine;
-pub use engine::*;
+#![allow(clippy::too_many_arguments)]
 
-#[path = "../../src-tauri/src/ps4ps5.rs"] mod ps4ps5;
-#[path = "../../src-tauri/src/ps3.rs"] mod ps3;
-#[path = "../../src-tauri/src/wiiu.rs"] mod wiiu;
-#[path = "../../src-tauri/src/xbox.rs"] mod xbox;
-#[path = "../../src-tauri/src/xbox360.rs"] mod xbox360;
-#[path = "../../src-tauri/src/gamecube.rs"] mod gamecube;
-#[path = "../../src-tauri/src/lzx.rs"] mod lzx;
-#[path = "../../src-tauri/src/ppc_disasm.rs"] mod ppc_disasm;
-#[path = "../../src-tauri/src/ps1_exe.rs"] mod ps1_exe;
-#[path = "../../src-tauri/src/ps1_memory_map.rs"] mod ps1_memory_map;
-#[path = "../../src-tauri/src/ps1_disasm.rs"] mod ps1_disasm;
-#[path = "../../src-tauri/src/call_graph.rs"] mod call_graph;
-#[path = "../../src-tauri/src/cfg.rs"] mod cfg;
-#[path = "../../src-tauri/src/decomp.rs"] mod decomp;
-#[path = "../../src-tauri/src/project.rs"] mod project;
-#[path = "../../src-tauri/src/search.rs"] mod search;
-#[path = "../../src-tauri/src/sdk_symbols.rs"] mod sdk_symbols;
-#[path = "../../src-tauri/src/sce_symbol_scanner.rs"] mod sce_symbol_scanner;
-#[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
-#[path = "../../src-tauri/src/ps1_symbols.rs"] mod ps1_symbols;
-
-#[cfg(test)]
-mod tests;
+use aura_cli::*;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
