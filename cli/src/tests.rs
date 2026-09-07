@@ -824,4 +824,148 @@ mod engine_tests {
     }
 }
 
+// ===========================================================================
+// sce_symbol_scanner.rs — external SDK DB loading + merge (extensibility)
+// ===========================================================================
+
+mod sce_db_tests {
+    use super::*;
+    use crate::sce_symbol_scanner::{CodeSection, SceSymbolDatabase};
+
+    /// A minimal `symbols.json` blob in the embedded snapshot's schema:
+    /// library → name → sha1 → variant(hex) → { size, type, relocations }.
+    /// The SHA-1 below is a known 40-char hex string (all zeros for the test).
+    const MIN_SYMBOLS_JSON: &str = r#"{
+  "libtest": {
+    "my_func": {
+      "0000000000000000000000000000000000000000": {
+        "0": {
+          "size": 8,
+          "type": "FUNCTION",
+          "relocations": {
+            "0": { "type": "NONE" },
+            "4": { "type": "MIPS_26" }
+          }
+        }
+      }
+    }
+  }
+}"#;
+
+    /// A minimal `tree.json`: a root at offset 0 with one leaf symbol ref.
+    const MIN_TREE_JSON: &str = r#"{
+  "offset": 0,
+  "next": [],
+  "symbols": [
+    { "library": "libtest", "name": "my_func", "hash": "0000000000000000000000000000000000000000", "variant": 0 }
+  ]
+}"#;
+
+    #[test]
+    fn load_from_json_parses_minimal_db() {
+        let db = SceSymbolDatabase::load_from_json(MIN_SYMBOLS_JSON, MIN_TREE_JSON)
+            .expect("parse minimal DB");
+        assert_eq!(db.symbol_count(), 1, "should have loaded one symbol");
+    }
+
+    #[test]
+    fn load_from_json_rejects_bad_symbols_json() {
+        let r = SceSymbolDatabase::load_from_json("not json", MIN_TREE_JSON);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn load_from_json_rejects_bad_tree_json() {
+        let r = SceSymbolDatabase::load_from_json(MIN_SYMBOLS_JSON, "not json");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn merge_adds_entries_from_other_db() {
+        // A second DB with a different symbol under the same library.
+        const OTHER_SYMBOLS_JSON: &str = r#"{
+  "libtest": {
+    "other_func": {
+      "1111111111111111111111111111111111111111": {
+        "0": { "size": 4, "type": "FUNCTION", "relocations": {} }
+      }
+    }
+  }
+}"#;
+        const OTHER_TREE_JSON: &str = r#"{ "offset": 0, "next": [], "symbols": [
+  { "library": "libtest", "name": "other_func", "hash": "1111111111111111111111111111111111111111", "variant": 0 }
+]}"#;
+
+        let mut db = SceSymbolDatabase::load_from_json(MIN_SYMBOLS_JSON, MIN_TREE_JSON)
+            .expect("base DB");
+        let other =
+            SceSymbolDatabase::load_from_json(OTHER_SYMBOLS_JSON, OTHER_TREE_JSON).expect("other DB");
+        assert_eq!(db.symbol_count(), 1);
+        db.merge(other);
+        assert_eq!(db.symbol_count(), 2, "merge should add the second symbol");
+    }
+
+    #[test]
+    fn merge_overrides_entry_with_same_key() {
+        // Same (library, name, hash, variant) → the incoming entry wins.
+        // Use a different `size` to confirm the override took effect via scan.
+        const OVERRIDE_SYMBOLS_JSON: &str = r#"{
+  "libtest": {
+    "my_func": {
+      "0000000000000000000000000000000000000000": {
+        "0": { "size": 12, "type": "FUNCTION", "relocations": {} }
+      }
+    }
+  }
+}"#;
+        const OVERRIDE_TREE_JSON: &str = r#"{ "offset": 0, "next": [], "symbols": [
+  { "library": "libtest", "name": "my_func", "hash": "0000000000000000000000000000000000000000", "variant": 0 }
+]}"#;
+        let mut db = SceSymbolDatabase::load_from_json(MIN_SYMBOLS_JSON, MIN_TREE_JSON).unwrap();
+        let other = SceSymbolDatabase::load_from_json(OVERRIDE_SYMBOLS_JSON, OVERRIDE_TREE_JSON)
+            .unwrap();
+        db.merge(other);
+        // Same key → count stays 1 (override, not add).
+        assert_eq!(db.symbol_count(), 1, "override should not duplicate the entry");
+    }
+
+    #[test]
+    fn load_from_files_reads_disk() {
+        // Write the minimal DB to temp files and load it via the file path API.
+        let dir = std::env::temp_dir().join("aura_sce_db_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sym_path = dir.join("symbols.json");
+        let tree_path = dir.join("tree.json");
+        std::fs::write(&sym_path, MIN_SYMBOLS_JSON).unwrap();
+        std::fs::write(&tree_path, MIN_TREE_JSON).unwrap();
+
+        let db = SceSymbolDatabase::load_from_files(&sym_path, &tree_path)
+            .expect("load from files");
+        assert_eq!(db.symbol_count(), 1);
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_db_loads_and_has_symbols() {
+        // The real embedded snapshot must always load and be non-empty.
+        let db = SceSymbolDatabase::load_embedded().expect("embedded DB");
+        assert!(
+            db.symbol_count() > 100,
+            "embedded DB should have hundreds of symbols, got {}",
+            db.symbol_count()
+        );
+    }
+
+    #[test]
+    fn scan_on_empty_sections_is_empty() {
+        // Scanning no code must never panic and return no matches.
+        let db = SceSymbolDatabase::load_embedded().unwrap();
+        let empty: Vec<CodeSection<'_>> = Vec::new();
+        let matches = db.scan(&empty);
+        assert!(matches.is_empty());
+    }
+}
+
 

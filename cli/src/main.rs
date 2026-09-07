@@ -76,7 +76,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +177,42 @@ fn cmd_sections(a: &Args) -> Result<String, String> {
 fn cmd_formats(a: &Args) -> Result<String, String> {
     let v = engine::supported_formats()?;
     Ok(serde_json::to_string_pretty(&v).unwrap_or_default())
+}
+
+/// `aura-cli sdk-db` — report the loaded SCE SDK symbol database: how many
+/// symbol variants it carries and whether a user-supplied external DB (via the
+/// `AURA_SCE_DB_DIR` env var) was merged on top of the built-in snapshot.
+fn cmd_sdk_db(a: &Args) -> Result<String, String> {
+    let db = engine::sce_db().as_ref().map_err(|e| e.clone())?;
+    let external_dir = std::env::var("AURA_SCE_DB_DIR").ok();
+    let mut out = format!("SCE SDK symbol database\n");
+    out.push_str(&format!("  symbol variants: {}\n", db.symbol_count()));
+    match &external_dir {
+        Some(dir) => {
+            // Confirm the files actually exist where the env var points.
+            let p = std::path::Path::new(dir);
+            let has_sym = p.join("symbols.json").exists();
+            let has_tree = p.join("tree.json").exists();
+            if has_sym && has_tree {
+                out.push_str(&format!("  external DB:    merged from {dir}\n"));
+            } else {
+                out.push_str(&format!(
+                    "  external DB:    {dir} set but symbols.json/tree.json missing — embedded-only\n"
+                ));
+            }
+        }
+        None => out.push_str("  external DB:    none (set AURA_SCE_DB_DIR to a dir with symbols.json+tree.json to extend)\n"),
+    }
+    if a.json {
+        Ok(serde_json::json!({
+            "symbol_variants": db.symbol_count(),
+            "external_db_dir": external_dir,
+            "embedded_only": external_dir.is_none(),
+        })
+        .to_string())
+    } else {
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +828,7 @@ fn run(argv: &[String]) -> Result<i32, String> {
         // overwrite the directory, so print the summary text instead.
         "export" => cmd_export(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "formats" => cmd_formats(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "sdk-db" => cmd_sdk_db(&a).and_then(|t| Ok(emit(&a.out, t))),
         cmd => Err(format!("Unknown command: {cmd}. Try --help")),
     }
 }

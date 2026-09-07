@@ -25,6 +25,7 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
   1. Trie traversal over masked instruction words to narrow candidate symbols.
   2. SHA-1 verification — masks relocated words in the candidate function body and compares against precomputed hashes.
   3. Disambiguation — selects the best match by static-bit count, size, and library/name uniqueness.
+- **Extensible without rebuilding** — point the `AURA_SCE_DB_DIR` environment variable at a directory containing your own `symbols.json` + `tree.json` (same schema as the embedded snapshot) and they are merged *on top of* the built-in database, adding new fingerprints and overriding existing ones. Inspect the loaded state with `aura-cli sdk-db [--json]`. This is the community-contribution path for SDK symbol data (mirroring how Ghidra loads external `.fidb` files).
 
 ### Call Graph Analysis
 - Builds a directed graph of all direct `JAL`/`J` call edges across detected functions.
@@ -363,8 +364,9 @@ aura-cli string-xrefs game.elf --json
 aura-cli patch-export game.elf --out game.aura --section game_patched.elf
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
+aura-cli sdk-db --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.
