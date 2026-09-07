@@ -234,7 +234,7 @@ fn cmd_nid_db(a: &Args) -> Result<String, String> {
             ));
         }
         None => out.push_str(
-            "  source:      none (set AURA_PS4_NID_DB to a local aerolib.csv to enable)\n",
+            "  source:      embedded aerolib (set AURA_PS4_NID_DB to override)\n",
         ),
     }
     if a.json {

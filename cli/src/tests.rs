@@ -749,8 +749,10 @@ mod ps4_nid_scan_tests {
         let nid = matches.iter().find(|m| m.nid == "ys1W6EwuVw4").expect("NID entry");
         assert_eq!(nid.address, 0x401000);
         assert_eq!(nid.kind, "function");
-        assert!(!nid.resolved, "should be unresolved without AURA_PS4_NID_DB");
-        assert_eq!(nid.name, "ys1W6EwuVw4");
+        // The embedded aerolib DB (GPL-3.0, ships in the binary) resolves this
+        // NID to __absvdi2 (the first record in aerolib.csv) — out of the box.
+        assert!(nid.resolved, "embedded DB should resolve ys1W6EwuVw4");
+        assert_eq!(nid.name, "__absvdi2");
     }
 
     #[test]

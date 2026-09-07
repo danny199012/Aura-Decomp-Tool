@@ -12,15 +12,21 @@
 //! per line, `NID<space>NAME`, Windows `\r\n` endings). This loader also
 //! accepts a `,` delimiter for robustness. ~97k records, ~3.5 MB.
 //!
-//! # Licensing note
-//! aerolib.csv is distributed by the `ps4_module_loader` project under
-//! **GPL-3.0**. To keep Aura's own licensing uncompromised, this module does
-//! **not** embed the database; it loads it from an external file the user
-//! supplies via `AURA_PS4_NID_DB` (a path to an `aerolib.csv`). When the env
-//! var is unset the DB is empty and PS4 NID renaming is a no-op.
+//! # Licensing
+//! aerolib.csv is © the `ps4_module_loader` contributors (SocraticBliss et al.)
+//! and is distributed under **GPL-3.0**, the same license as Aura. It is
+//! therefore **embedded** (`include_str!`) and available out of the box — no
+//! setup required. The `AURA_PS4_NID_DB` env var, if set, *overrides* the
+//! embedded copy with a user-supplied file (e.g. a newer aerolib.csv snapshot
+//! or a private NID set), so the community can drop in updates without a
+//! rebuild.
 
 use std::collections::HashMap;
 use std::path::Path;
+
+/// The embedded aerolib.csv snapshot (~97,000 NID → name entries), included at
+/// compile time. GPL-3.0, same license as Aura.
+const EMBEDDED_AEROLIB: &str = include_str!("../resources/ps4_nids/aerolib.csv");
 
 /// A loaded NID → symbol-name database.
 #[derive(Debug, Clone, Default)]
@@ -32,6 +38,11 @@ impl NidDb {
     /// An empty database (no NIDs known).
     pub fn empty() -> Self {
         Self { nids: HashMap::new() }
+    }
+
+    /// Load the embedded aerolib.csv snapshot.
+    pub fn load_embedded() -> Result<Self, String> {
+        Self::load_from_csv(EMBEDDED_AEROLIB)
     }
 
     /// Parse an aerolib.csv-style text blob into a database. Each non-empty
@@ -80,10 +91,11 @@ impl NidDb {
 
 /// Lazily-loaded NID database.
 ///
-/// On first use this reads `AURA_PS4_NID_DB` (a path to an `aerolib.csv`) and
-/// loads it. If the env var is unset or the file is missing, the DB is empty
-/// and a warning is printed once — the tool never crashes because a community
-/// data file is absent. The result is cached for the process.
+/// Loads the **embedded** aerolib.csv by default (works out of the box). If
+/// `AURA_PS4_NID_DB` is set to a file path, that **overrides** the embedded
+/// copy — so users can drop in a newer aerolib.csv or a private NID set without
+/// rebuilding. A malformed override falls back to the embedded DB (never an
+/// error, so a bad community file can't break the tool). Cached for the process.
 pub fn ps4_nid_db() -> &'static Result<NidDb, String> {
     static DB: std::sync::OnceLock<Result<NidDb, String>> = std::sync::OnceLock::new();
     DB.get_or_init(|| {
@@ -93,14 +105,23 @@ pub fn ps4_nid_db() -> &'static Result<NidDb, String> {
                 if !p.exists() {
                     eprintln!(
                         "aura: AURA_PS4_NID_DB set to {} but the file is absent; \
-                         PS4 NID renaming disabled",
+                         using the embedded aerolib database",
                         p.display()
                     );
-                    return Ok(NidDb::empty());
+                    return NidDb::load_embedded();
                 }
-                NidDb::load_from_file(p)
+                match NidDb::load_from_file(p) {
+                    Ok(db) => Ok(db),
+                    Err(e) => {
+                        eprintln!(
+                            "aura: AURA_PS4_NID_DB failed to load ({e}); \
+                             using the embedded aerolib database"
+                        );
+                        NidDb::load_embedded()
+                    }
+                }
             }
-            None => Ok(NidDb::empty()),
+            None => NidDb::load_embedded(),
         }
     })
 }
@@ -177,10 +198,23 @@ mod tests {
     }
 
     #[test]
-    fn ps4_nid_db_without_env_var_is_ok() {
-        // ps4_nid_db must never return Err when the env var is unset — a
-        // missing community data file must not break the tool.
+    fn ps4_nid_db_without_env_var_loads_embedded() {
+        // With no override env var, the embedded aerolib DB loads by default
+        // (GPL-3.0, so it ships in the binary). It must be non-empty and never
+        // return Err — a missing community override must not break the tool.
         let db = ps4_nid_db();
-        assert!(db.is_ok(), "ps4_nid_db must never return Err when env unset");
+        assert!(db.is_ok(), "ps4_nid_db must never return Err");
+        assert!(
+            db.as_ref().unwrap().len() > 1000,
+            "embedded aerolib should have thousands of entries, got {}",
+            db.as_ref().unwrap().len()
+        );
+    }
+
+    #[test]
+    fn embedded_db_resolves_known_nid() {
+        // A NID known to be in aerolib (the first record: ys1W6EwuVw4 -> __absvdi2).
+        let db = NidDb::load_embedded().unwrap();
+        assert_eq!(db.lookup("ys1W6EwuVw4"), Some("__absvdi2"));
     }
 }
