@@ -43,6 +43,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/sce_symbol_scanner.rs"] pub mod sce_symbol_scanner;
 #[path = "../../src-tauri/src/decomp_export.rs"] pub mod decomp_export;
 #[path = "../../src-tauri/src/ps1_symbols.rs"] pub mod ps1_symbols;
+#[path = "../../src-tauri/src/nid_db.rs"] pub mod nid_db;
 
 #[cfg(test)]
 mod tests;

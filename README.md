@@ -27,6 +27,11 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
   3. Disambiguation — selects the best match by static-bit count, size, and library/name uniqueness.
 - **Extensible without rebuilding** — point the `AURA_SCE_DB_DIR` environment variable at a directory containing your own `symbols.json` + `tree.json` (same schema as the embedded snapshot) and they are merged *on top of* the built-in database, adding new fingerprints and overriding existing ones. Inspect the loaded state with `aura-cli sdk-db [--json]`. This is the community-contribution path for SDK symbol data (mirroring how Ghidra loads external `.fidb` files).
 
+### PS4/PS5 NID Database
+PS4/PS5 Orbis binaries identify SDK imports and exports by **NID** (a 64-bit identifier) rather than by name — stripped retail `.sprx`/`.self` carry NIDs where a normal ELF carries symbol names. The community **aerolib.csv** database (~97,000 entries) maps those NIDs back to real C symbol names (`printf`, `scePadRead`, …) — the PS4/PS5 analogue of the PS2 SCE SDK SHA-1 fingerprint DB.
+- **External load** — aerolib.csv is GPL-3.0, so it is *not* embedded (to keep Aura's licensing clean). Download `aerolib.csv` yourself and point `AURA_PS4_NID_DB` at it; the DB is then available for PS4 NID→name resolution. Inspect the loaded state with `aura-cli nid-db [--json]`.
+- When the env var is unset, NID-based renaming is a graceful no-op and every other feature keeps working.
+
 ### Call Graph Analysis
 - Builds a directed graph of all direct `JAL`/`J` call edges across detected functions.
 - Enriches external targets with import names via dynamic relocations (`R_MIPS_26`).
@@ -389,8 +394,9 @@ aura-cli patch-export game.elf --out game.aura --section game_patched.elf
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 aura-cli sdk-db --json
+aura-cli nid-db --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to enable PS4/PS5 NID→name resolution.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

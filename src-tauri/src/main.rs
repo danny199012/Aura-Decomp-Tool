@@ -25,6 +25,7 @@ mod project;
 mod search;
 mod lzx;
 mod ppc_disasm;
+mod nid_db;
 mod ps3;
 mod ps4ps5;
 mod sdk_symbols;
