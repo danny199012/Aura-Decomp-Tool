@@ -1,0 +1,58 @@
+name: CI
+
+# Aura Decomp Tool — continuous integration.
+#
+# The Tauri GUI crate (src-tauri) needs system GTK/webview libraries that a
+# CI runner doesn't have by default, so we don't build the GUI here. Instead
+# we build `cli/` — a *standalone* crate (no Tauri deps) that #[path]-includes
+# the exact same analysis modules the GUI uses. Building + testing it proves
+# the shared analysis engine compiles and behaves correctly on every push.
+# This is the same engine the headless `aura-cli` binary ships.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build & test (engine via cli)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cli/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('cli/Cargo.lock', 'cli/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build the CLI (shared engine)
+        working-directory: cli
+        run: cargo build --release --locked
+
+      - name: Run engine tests
+        working-directory: cli
+        run: cargo test --release --locked
+
+      - name: CLI smoke test
+        working-directory: cli
+        shell: bash
+        run: |
+          ./target/release/aura-cli --version
+          ./target/release/aura-cli formats --json
