@@ -30,6 +30,9 @@ pub use engine::*;
 #[path = "../../src-tauri/src/decomp_export.rs"] mod decomp_export;
 #[path = "../../src-tauri/src/ps1_symbols.rs"] mod ps1_symbols;
 
+#[cfg(test)]
+mod tests;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
