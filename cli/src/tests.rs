@@ -968,4 +968,239 @@ mod sce_db_tests {
     }
 }
 
+// ===========================================================================
+// decomp.rs — PowerPC instruction lifter (the first non-MIPS front-end)
+// ===========================================================================
+
+mod ppc_lifter_tests {
+    use super::*;
+
+    /// Encode a PPC D-form word: op | (rt<<21) | (ra<<16) | imm.
+    fn ppc_d(op: u32, rt: u32, ra: u32, imm: u32) -> u32 {
+        (op << 26) | (rt << 21) | (ra << 16) | (imm & 0xFFFF)
+    }
+    /// Encode a PPC X-form word: op | (rt<<21) | (ra<<16) | (rb<<11) | (xo<<1).
+    fn ppc_x(op: u32, rt: u32, ra: u32, rb: u32, xo: u32) -> u32 {
+        (op << 26) | (rt << 21) | (ra << 16) | (rb << 11) | (xo << 1)
+    }
+
+    #[test]
+    fn lift_ppc_nop() {
+        let stmts = decomp::lift_ppc_instruction(0x6000_0000, 0x1000, &BTreeMap::new());
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts[0], IrStmt::Nop));
+    }
+
+    #[test]
+    fn lift_ppc_li() {
+        // li r3, 5  (op 14, rt=3, ra=0)
+        let w = ppc_d(14, 3, 0, 5);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::Assign { dst, src } => { assert_eq!(dst, "$r3"); assert_eq!(src, "5"); }
+            other => panic!("expected Assign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_addi() {
+        // addi r4, r3, 8  (op 14, rt=4, ra=3)
+        let w = ppc_d(14, 4, 3, 8);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::BinOp { dst, op, a, b } => {
+                assert_eq!(dst, "$r4"); assert_eq!(op, "+"); assert_eq!(a, "$r3"); assert_eq!(b, "8");
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_lis() {
+        // lis r5, 0x10  (op 15, rt=5, ra=0)
+        let w = ppc_d(15, 5, 0, 0x10);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::Assign { dst, src } => {
+                assert_eq!(dst, "$r5");
+                assert!(src.contains("<< 16"), "lis should shift high, got {}", src);
+            }
+            other => panic!("expected Assign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_add() {
+        // add r6, r3, r4  (op 31, xo 266)
+        let w = ppc_x(31, 6, 3, 4, 266);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::BinOp { dst, op, a, b } => {
+                assert_eq!(dst, "$r6"); assert_eq!(op, "+"); assert_eq!(a, "$r3"); assert_eq!(b, "$r4");
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_subf() {
+        // subf r6, r3, r4  (op 31, xo 40) → r6 = r4 - r3
+        let w = ppc_x(31, 6, 3, 4, 40);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::BinOp { dst, op, a, b } => {
+                assert_eq!(dst, "$r6"); assert_eq!(op, "-");
+                assert_eq!(a, "$r4", "subf computes rB - rA"); assert_eq!(b, "$r3");
+            }
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_logic_ops() {
+        // and r5, r6, r7 (xo 28), xor (316)
+        for (xo, sym) in [(28u32, "&"), (316, "^")] {
+            let w = ppc_x(31, 6, 5, 7, xo);
+            let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+            assert!(
+                matches!(&stmts[0], IrStmt::BinOp { op, .. } if op == sym),
+                "xo {} should lift to op {}", xo, sym
+            );
+        }
+    }
+
+    #[test]
+    fn lift_ppc_mr_is_assign() {
+        // mr r5, r6  (op 31, xo 444, rt=6, ra=5, rb=6)
+        let w = ppc_x(31, 6, 5, 6, 444);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::Assign { dst, src } => { assert_eq!(dst, "$r5"); assert_eq!(src, "$r6"); }
+            other => panic!("expected Assign (mr), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_loads_and_stores() {
+        let w = ppc_d(32, 3, 4, 8); // lwz r3, 8(r4)
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        assert!(matches!(&stmts[0], IrStmt::Load { size: 4, offset: 8, .. }));
+        let w = ppc_d(36, 3, 4, 16); // stw r3, 16(r4)
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        assert!(matches!(&stmts[0], IrStmt::Store { size: 4, offset: 16, .. }));
+        let w = ppc_d(34, 3, 4, 4); // lbz → size 1
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        assert!(matches!(&stmts[0], IrStmt::Load { size: 1, .. }));
+    }
+
+    #[test]
+    fn lift_ppc_blr_is_return() {
+        // blr = 0x4E800020
+        let w = 0x4E800020u32;
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        assert!(matches!(stmts[0], IrStmt::Return { value: None }), "blr should lift to Return");
+    }
+
+    #[test]
+    fn lift_ppc_bl_is_call_with_known_name() {
+        // bl to 0x2000 from 0x1000: op 18, lk=1, li = 0x1000 (disp)
+        let disp = 0x1000u32;
+        let w = (18u32 << 26) | (disp & 0x03FF_FFFC) | 1; // lk=1
+        let mut known = BTreeMap::new();
+        known.insert(0x2000, "my_func".to_string());
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &known);
+        match &stmts[0] {
+            IrStmt::Call { target } => assert_eq!(target, "my_func"),
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_bl_unknown_renders_address() {
+        let disp = 0x1000u32;
+        let w = (18u32 << 26) | (disp & 0x03FF_FFFC) | 1;
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::Call { target } => assert!(target.contains("2000"), "got {}", target),
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_unconditional_b_is_goto() {
+        // b to 0x2000 from 0x1000: op 18, lk=0
+        let disp = 0x1000u32;
+        let w = (18u32 << 26) | (disp & 0x03FF_FFFC);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::Goto { label } => assert!(label.contains("2000"), "label={}", label),
+            other => panic!("expected Goto, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_conditional_branch_is_cond_goto() {
+        // beq (bo=12, bi=2) to 0x1010 from 0x1000: op 16, bd = 0x10
+        let bd = 0x10u32;
+        let w = (16u32 << 26) | (12u32 << 21) | (2u32 << 16) | (bd & 0x0000_FFFC);
+        let stmts = decomp::lift_ppc_instruction(w, 0x1000, &BTreeMap::new());
+        match &stmts[0] {
+            IrStmt::CondGoto { cond, label } => {
+                assert!(cond.contains("== 0"), "beq cond={}", cond);
+                assert!(label.contains("1010"), "label={}", label);
+            }
+            other => panic!("expected CondGoto, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lift_ppc_unknown_is_raw() {
+        // op=0, all-zero word → no handler → Raw.
+        let stmts = decomp::lift_ppc_instruction(0x0000_0000, 0x1000, &BTreeMap::new());
+        assert!(matches!(stmts[0], IrStmt::Raw { .. }));
+    }
+
+    #[test]
+    fn lift_ppc_consistency_with_disassembler_blr() {
+        // Cross-check: the disassembler and the lifter both recognize blr.
+        let bytes = 0x4E800020u32.to_be_bytes();
+        let dis = ppc_disasm::disassemble_ppc_at(&bytes, 0, 0, 1, PpcEndian::Big);
+        let lift = decomp::lift_ppc_instruction(0x4E800020, 0, &BTreeMap::new());
+        assert_eq!(dis.len(), 1);
+        assert!(dis[0].mnemonic.contains("blr"));
+        assert!(matches!(lift[0], IrStmt::Return { value: None }));
+    }
+
+    #[test]
+    fn decompile_ppc_section_renders_function() {
+        // A tiny PPC function: li r3,5; blr. Bytes are big-endian words.
+        let li_r3_5 = ppc_d(14, 3, 0, 5); // li r3, 5
+        let mut code = Vec::new();
+        code.extend_from_slice(&li_r3_5.to_be_bytes());
+        code.extend_from_slice(&0x4E800020u32.to_be_bytes()); // blr
+        let d = decomp::decompile_ppc_section(&code, 0x1000, &BTreeMap::new());
+        assert!(d.pseudocode.contains("void sub_"), "pseudocode:\n{}", d.pseudocode);
+        assert!(d.pseudocode.contains("$r3 = 5;"), "pseudocode:\n{}", d.pseudocode);
+        assert!(d.pseudocode.contains("return;"), "pseudocode:\n{}", d.pseudocode);
+        assert_eq!(d.instr_count, 2);
+    }
+
+    #[test]
+    fn decompile_ppc_section_emits_branch_label() {
+        // b back to 0x1000 from 0x1004 (disp -4 → wraps to 0x1000).
+        // At 0x1000: li r3,1 ; 0x1004: b 0x1000 ; 0x1008: blr
+        let li = ppc_d(14, 3, 0, 1);
+        // b 0x1000 from 0x1004: disp = 0x1000 - 0x1004 = -4 → 0xFFFFFFFC masked to 0x03FFFFFC
+        let b = (18u32 << 26) | (0x03FF_FFFC); // b (lk=0), disp = -4
+        let blr = 0x4E800020u32;
+        let mut code = Vec::new();
+        code.extend_from_slice(&li.to_be_bytes());
+        code.extend_from_slice(&b.to_be_bytes());
+        code.extend_from_slice(&blr.to_be_bytes());
+        let d = decomp::decompile_ppc_section(&code, 0x1000, &BTreeMap::new());
+        assert!(d.pseudocode.contains("loc_00001000"), "pseudocode:\n{}", d.pseudocode);
+        assert!(d.pseudocode.contains("goto"), "pseudocode:\n{}", d.pseudocode);
+    }
+}
+
 
