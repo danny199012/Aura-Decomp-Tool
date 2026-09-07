@@ -331,6 +331,15 @@ Aura-Decomp-Tool/
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+O` | Open file dialog |
+| `1`–`9` | Jump to a sidebar view (1=Home, 2=Binary info, 3=Disasm, 4=Hex, 5=Call graph, 6=CFG/xrefs, 7=Decompiler, 8=Project, 9=Search). Views that need a loaded file are skipped when none is open. |
+| `Ctrl+F` | Search & strings |
+| `Ctrl+G` | Go to disassembly |
+| `Ctrl+Shift+G` | Call graph |
+| `Ctrl+Shift+X` | CFG & xrefs |
+| `Ctrl+E` | Decompiler |
+| `?` | Show the keyboard-shortcuts overlay (Esc to close) |
+
+Single-key shortcuts are suppressed while typing in a text field so they never hijack input.
 
 ---
 
