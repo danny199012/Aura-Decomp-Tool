@@ -27,6 +27,12 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
   3. Disambiguation — selects the best match by static-bit count, size, and library/name uniqueness.
 - **Extensible without rebuilding** — point the `AURA_SCE_DB_DIR` environment variable at a directory containing your own `symbols.json` + `tree.json` (same schema as the embedded snapshot) and they are merged *on top of* the built-in database, adding new fingerprints and overriding existing ones. Inspect the loaded state with `aura-cli sdk-db [--json]`. This is the community-contribution path for SDK symbol data (mirroring how Ghidra loads external `.fidb` files).
 
+### PS4/PS5 NID Database
+PS4/PS5 Orbis binaries identify SDK imports and exports by **NID** (a 64-bit identifier) rather than by name — stripped retail `.sprx`/`.self` carry NIDs where a normal ELF carries symbol names. The community **aerolib.csv** database (~97,000 entries) maps those NIDs back to real C symbol names (`printf`, `scePadRead`, …) — the PS4/PS5 analogue of the PS2 SCE SDK SHA-1 fingerprint DB.
+- **Embedded + overridable** — Aura ships with the aerolib.csv database embedded (it's GPL-3.0, same as Aura), so PS4 NID resolution works out of the box, no setup. To use a different/newer snapshot or a private NID set, point `AURA_PS4_NID_DB` at an `aerolib.csv` and it overrides the embedded copy (a missing/bad override falls back to embedded). Inspect the loaded state with `aura-cli nid-db [--json]`.
+- **`.dynsym` NID extraction** — `aura-cli ps4-nid-scan <file> [--json]` parses a PS4/PS5 binary's dynamic symbol table, extracts the NID from each symbol name (the first 11 chars, the base64 token), looks it up in the aerolib DB, and reports each symbol's address + NID + resolved name. Symbols the binary already names (non-NID strings) pass through unchanged. This is the PS4 analogue of `aura-cli sdk-scan` for PS2.
+- With the embedded DB, NID-based renaming works out of the box — no setup required.
+
 ### Call Graph Analysis
 - Builds a directed graph of all direct `JAL`/`J` call edges across detected functions.
 - Enriches external targets with import names via dynamic relocations (`R_MIPS_26`).
@@ -359,7 +365,14 @@ Single-key shortcuts are suppressed while typing in a text field so they never h
 
 ## License
 
-Private — Aura Project
+## License
+
+**GNU General Public License v3.0 (GPL-3.0)** — see [LICENSE](LICENSE).
+
+Aura is free and open-source software. This mirrors the licensing of the
+console-reversing ecosystem it's built on (ps2recomp, OpenOrbis, and the
+`ps4_module_loader`/aerolib project, whose NID database Aura embeds). You are
+free to use, study, modify, and redistribute it under the terms of GPL-3.0.
 
 ---
 
@@ -389,8 +402,10 @@ aura-cli patch-export game.elf --out game.aura --section game_patched.elf
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 aura-cli sdk-db --json
+aura-cli nid-db --json
+aura-cli ps4-nid-scan eboot.bin --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.
