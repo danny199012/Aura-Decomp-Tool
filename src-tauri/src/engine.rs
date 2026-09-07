@@ -1206,11 +1206,47 @@ pub fn detect_functions_inner(info: &ElfFileInfo) -> Result<Vec<FunctionEntry>, 
     Ok(funcs)
 }
 
-/// Lazily-loaded embedded SCE SDK symbol database. Parsing the ~12 MB of JSON
+/// Lazily-loaded SCE SDK symbol database. Parsing the ~12 MB of JSON
 /// takes a few hundred ms, so it's done once per process on first use.
+///
+/// **Extensibility:** if the `AURA_SCE_DB_DIR` environment variable points at a
+/// directory containing user-supplied `symbols.json` + `tree.json` files (same
+/// schema as the embedded snapshot), they are merged *on top of* the built-in
+/// database — adding new fingerprints and overriding built-in ones — without
+/// rebuilding the binary. This is how the community can contribute SDK symbol
+/// data (mirroring how Ghidra loads external `.fidb` files).
 pub fn sce_db() -> &'static Result<SceSymbolDatabase, String> {
     static DB: OnceLock<Result<SceSymbolDatabase, String>> = OnceLock::new();
-    DB.get_or_init(SceSymbolDatabase::load_embedded)
+    DB.get_or_init(|| {
+        let mut db = SceSymbolDatabase::load_embedded()?;
+        if let Some(ext) = load_external_sce_db() {
+            db.merge(ext);
+        }
+        Ok(db)
+    })
+}
+
+/// If `AURA_SCE_DB_DIR` is set and contains `symbols.json` + `tree.json`, load
+/// and return that user database. Returns `None` (not an error) if the env var
+/// is unset or the files are absent — the built-in DB is still fully usable.
+fn load_external_sce_db() -> Option<SceSymbolDatabase> {
+    let dir = std::env::var_os("AURA_SCE_DB_DIR")?;
+    let dir = std::path::Path::new(&dir);
+    let symbols = dir.join("symbols.json");
+    let tree = dir.join("tree.json");
+    if !symbols.exists() || !tree.exists() {
+        return None;
+    }
+    // A malformed external DB must not take the whole tool down: fall back to
+    // the embedded-only DB by returning None on any parse error.
+    match SceSymbolDatabase::load_from_files(&symbols, &tree) {
+        Ok(db) => Some(db),
+        Err(e) => {
+            eprintln!("aura: AURA_SCE_DB_DIR set but external DB failed to load ({e}); \
+                      falling back to embedded-only");
+            None
+        }
+    }
 }
 
 /// Build the code-section views the scanner needs from Aura's ELF sections.

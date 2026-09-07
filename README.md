@@ -25,6 +25,7 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
   1. Trie traversal over masked instruction words to narrow candidate symbols.
   2. SHA-1 verification — masks relocated words in the candidate function body and compares against precomputed hashes.
   3. Disambiguation — selects the best match by static-bit count, size, and library/name uniqueness.
+- **Extensible without rebuilding** — point the `AURA_SCE_DB_DIR` environment variable at a directory containing your own `symbols.json` + `tree.json` (same schema as the embedded snapshot) and they are merged *on top of* the built-in database, adding new fingerprints and overriding existing ones. Inspect the loaded state with `aura-cli sdk-db [--json]`. This is the community-contribution path for SDK symbol data (mirroring how Ghidra loads external `.fidb` files).
 
 ### Call Graph Analysis
 - Builds a directed graph of all direct `JAL`/`J` call edges across detected functions.
@@ -54,6 +55,20 @@ Example output:
 // Decompiled from 0x80010000 (2 blocks)
 void sub_80010000() {
   sub_80010010();
+  return;
+}
+```
+
+### Decompiler — PowerPC → pseudocode (PS3 / Wii U)
+The first **non-MIPS** decompiler front-end — extends the same typed IR and renderer used by the MIPS lifter to big-endian PowerPC, so PS3 and Wii U binaries get C-like pseudocode instead of stopping at disassembly:
+- **`lift_ppc_instruction`** — lifts the common PPC integer ISA to the shared `IrStmt` IR: immediate arithmetic (`li`/`addi`/`lis`/`mulli`), D-form loads/stores (`lwz`/`lbz`/`stw`/`stb`/`lhz`/`sth`), register-form logic/arith (`add`/`subf`/`and`/`or`/`xor`/`slw`/`srw`/`divw`), branches (`b`/`bl`/`bc`), and returns (`blr`). Float/vector/supervisor instructions fall through to a `Raw` comment.
+- **`decompile_ppc_section`** — a linear first-pass sweep that lifts every word and renders readable pseudocode, emitting `loc_` labels at branch targets so the output stays navigable. (A recursive-descent PPC CFG is the natural follow-up — PPC has no delay slots, so it is simpler than the MIPS CFG.)
+- **CLI** — `aura-cli decompile-ppc <file> [--json]` decompiles the first executable section of a PS3 or Wii U binary.
+
+```c
+// PPC decompilation (linear first-pass) from 0x00010000
+void sub_00010000() {
+  $r3 = 5;
   return;
 }
 ```
@@ -330,6 +345,15 @@ Aura-Decomp-Tool/
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+O` | Open file dialog |
+| `1`–`9` | Jump to a sidebar view (1=Home, 2=Binary info, 3=Disasm, 4=Hex, 5=Call graph, 6=CFG/xrefs, 7=Decompiler, 8=Project, 9=Search). Views that need a loaded file are skipped when none is open. |
+| `Ctrl+F` | Search & strings |
+| `Ctrl+G` | Go to disassembly |
+| `Ctrl+Shift+G` | Call graph |
+| `Ctrl+Shift+X` | CFG & xrefs |
+| `Ctrl+E` | Decompiler |
+| `?` | Show the keyboard-shortcuts overlay (Esc to close) |
+
+Single-key shortcuts are suppressed while typing in a text field so they never hijack input.
 
 ---
 
@@ -353,6 +377,7 @@ aura-cli cfg game.elf --json
 aura-cli xrefs game.elf --at 0x80123456 --json
 aura-cli decompile game.elf --at 0x80123456
 aura-cli decompile game.elf --json --max 100
+aura-cli decompile-ppc ps3.elf --json
 aura-cli project game.elf --section save --out game.aura
 aura-cli project game.elf --section apply --out game.aura --json
 aura-cli script game.elf --script rename.lua --out game.aura --json
@@ -363,8 +388,9 @@ aura-cli string-xrefs game.elf --json
 aura-cli patch-export game.elf --out game.aura --section game_patched.elf
 aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
+aura-cli sdk-db --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

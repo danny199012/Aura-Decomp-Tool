@@ -211,7 +211,229 @@ fn label_for(addr: u32) -> String {
     format!("loc_{:08X}", addr)
 }
 
+// ===========================================================================
+// PowerPC instruction lifter — the first non-MIPS decompiler front-end.
+// Reuses the same `IrStmt` IR as the MIPS lifter so render_stmt + the CFG
+// block/label logic work unchanged. PPC has no branch-delay slot, and uses a
+// condition-register (CR) model; this first-pass lifter models the common
+// integer ISA — float/vector/supervisor instructions fall through to `Raw`.
+// ===========================================================================
 
+/// PPC GPR names (r0..r31).
+const PPC_REG: [&str; 32] = [
+    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    "r16", "r17", "r18", "r19", "r20", "r21", "r22", "r23",
+    "r24", "r25", "r26", "r27", "r28", "r29", "r30", "r31",
+];
+
+#[inline]
+fn preg(idx: u32) -> String {
+    format!("${}", PPC_REG[(idx & 0x1F) as usize])
+}
+
+/// Lift a single 32-bit PowerPC instruction word into IR statement(s).
+/// `addr` is the instruction's absolute address (for PC-relative branch
+/// targets). `known_funcs` maps call target addresses to names so `bl`
+/// renders as `name(...)`. `nop` (0x60000000) lifts to `Nop` (suppressed).
+pub fn lift_ppc_instruction(word: u32, addr: u32, known_funcs: &BTreeMap<u32, String>) -> Vec<IrStmt> {
+    if word == 0x6000_0000 {
+        return vec![IrStmt::Nop]; // ori 0,0,0 — canonical PPC nop
+    }
+    let op = word >> 26;
+    let rt = (word >> 21) & 0x1F;
+    let ra = (word >> 16) & 0x1F;
+    let rb = (word >> 11) & 0x1F;
+    let xo10 = (word >> 1) & 0x3FF;
+    let simm = (word & 0xFFFF) as u16 as i16 as i32;
+    let uimm = word & 0xFFFF;
+    let lk = word & 1 != 0;
+
+    let mut li = word & 0x03FF_FFFC;
+    if li & 0x0200_0000 != 0 { li |= 0xFC00_0000; }
+    let li = li as i32;
+    let mut bd = word & 0x0000_FFFC;
+    if bd & 0x0000_8000 != 0 { bd |= 0xFFFF_0000; }
+    let bd = bd as i32;
+    let aa = word & 0x2 != 0;
+    let b_target = |disp: i32| -> u32 {
+        if aa { disp as i64 as u32 } else { (addr as i64 + disp as i64) as u32 }
+    };
+    let r = |i: u32| preg(i);
+
+    match op {
+        7 => vec![IrStmt::BinOp { dst: r(rt), op: "*".into(), a: r(ra), b: simm.to_string() }], // mulli
+        8 => vec![IrStmt::BinOp { dst: r(rt), op: "-".into(), a: simm.to_string(), b: r(ra) }], // subfic
+        14 => if ra == 0 { // li / addi
+            vec![IrStmt::Assign { dst: r(rt), src: simm.to_string() }]
+        } else {
+            vec![IrStmt::BinOp { dst: r(rt), op: "+".into(), a: r(ra), b: simm.to_string() }]
+        },
+        15 => if ra == 0 { // lis / addis
+            vec![IrStmt::Assign { dst: r(rt), src: format!("0x{:X} << 16", uimm) }]
+        } else {
+            vec![IrStmt::BinOp { dst: r(rt), op: "+".into(), a: r(ra), b: format!("0x{:X} << 16", uimm) }]
+        },
+        24 => vec![IrStmt::BinOp { dst: r(ra), op: "|".into(), a: r(rt), b: format!("0x{:X}", uimm) }], // ori
+        25 => vec![IrStmt::BinOp { dst: r(ra), op: "|".into(), a: r(rt), b: format!("0x{:X} << 16", uimm) }], // oris
+        26 => vec![IrStmt::BinOp { dst: r(ra), op: "^".into(), a: r(rt), b: format!("0x{:X}", uimm) }], // xori
+        27 => vec![IrStmt::BinOp { dst: r(ra), op: "^".into(), a: r(rt), b: format!("0x{:X} << 16", uimm) }], // xoris
+        28 => vec![IrStmt::BinOp { dst: r(ra), op: "&".into(), a: r(rt), b: format!("0x{:X}", uimm) }], // andi.
+        29 => vec![IrStmt::BinOp { dst: r(ra), op: "&".into(), a: r(rt), b: format!("0x{:X} << 16", uimm) }], // andis.
+        32 => vec![IrStmt::Load { dst: r(rt), base: r(ra), offset: simm, size: 4 }], // lwz
+        34 => vec![IrStmt::Load { dst: r(rt), base: r(ra), offset: simm, size: 1 }], // lbz
+        40 => vec![IrStmt::Load { dst: r(rt), base: r(ra), offset: simm, size: 2 }], // lhz
+        42 => vec![IrStmt::Load { dst: r(rt), base: r(ra), offset: simm, size: 2 }], // lha
+        36 => vec![IrStmt::Store { base: r(ra), offset: simm, src: r(rt), size: 4 }], // stw
+        38 => vec![IrStmt::Store { base: r(ra), offset: simm, src: r(rt), size: 1 }], // stb
+        44 => vec![IrStmt::Store { base: r(ra), offset: simm, src: r(rt), size: 2 }], // sth
+        18 => { // b / bl
+            let target = b_target(li);
+            if lk {
+                let name = known_funcs.get(&target).cloned().unwrap_or_else(|| format!("0x{:08X}", target));
+                vec![IrStmt::Call { target: name }]
+            } else {
+                vec![IrStmt::Goto { label: label_for(target) }]
+            }
+        }
+        16 => { // bc
+            let bo = (word >> 21) & 0x1F;
+            let bi = (word >> 16) & 0x1F;
+            let target = b_target(bd);
+            if bo == 20 {
+                vec![IrStmt::Goto { label: label_for(target) }]
+            } else {
+                vec![IrStmt::CondGoto { cond: ppc_cond_string(bo, bi), label: label_for(target) }]
+            }
+        }
+        19 => match xo10 { // XL group: bclr / bcctr
+            16 => {
+                let bo = (word >> 21) & 0x1F;
+                if bo == 20 && !lk { vec![IrStmt::Return { value: None }] }
+                else if lk { vec![IrStmt::Call { target: "$lr".into() }] }
+                else { vec![IrStmt::Goto { label: "$lr".into() }] }
+            }
+            528 => if lk { vec![IrStmt::Call { target: "$ctr".into() }] }
+                   else { vec![IrStmt::Goto { label: "$ctr".into() }] },
+            _ => vec![IrStmt::Raw { addr, word }],
+        },
+        31 => match xo10 { // X/XO group: register-form arithmetic/logic
+            266 => vec![IrStmt::BinOp { dst: r(rt), op: "+".into(), a: r(ra), b: r(rb) }], // add
+            40 => vec![IrStmt::BinOp { dst: r(rt), op: "-".into(), a: r(rb), b: r(ra) }], // subf
+            235 => vec![IrStmt::BinOp { dst: r(rt), op: "*".into(), a: r(ra), b: r(rb) }], // mullw
+            491 => vec![IrStmt::BinOp { dst: r(rt), op: "/".into(), a: r(ra), b: r(rb) }], // divw
+            459 => vec![IrStmt::BinOp { dst: r(rt), op: "/".into(), a: format!("(u){}", r(ra)), b: format!("(u){}", r(rb)) }], // divwu
+            28 => vec![IrStmt::BinOp { dst: r(ra), op: "&".into(), a: r(rt), b: r(rb) }], // and
+            444 => vec![IrStmt::Assign { dst: r(ra), src: r(rt) }], // or/mr
+            316 => vec![IrStmt::BinOp { dst: r(ra), op: "^".into(), a: r(rt), b: r(rb) }], // xor
+            476 => vec![IrStmt::UnaryOp { dst: r(ra), op: "~".into(), a: format!("({} & {})", r(rt), r(rb)) }], // nand
+            31 => vec![IrStmt::UnaryOp { dst: r(ra), op: "~".into(), a: format!("({} | {})", r(rt), r(rb)) }], // nor
+            24 => vec![IrStmt::BinOp { dst: r(ra), op: "<<".into(), a: r(rt), b: r(rb) }], // slw
+            536 => vec![IrStmt::BinOp { dst: r(ra), op: ">>".into(), a: r(rt), b: r(rb) }], // srw
+            824 => vec![IrStmt::BinOp { dst: r(ra), op: ">>a".into(), a: r(rt), b: rb.to_string() }], // srawi
+            0 => vec![IrStmt::Comment(format!("cmp cr{}, {}", (word >> 23) & 0x7, r(ra)))], // cmp
+            _ => vec![IrStmt::Raw { addr, word }],
+        },
+        17 => vec![IrStmt::Comment("syscall".into())], // sc
+        _ => vec![IrStmt::Raw { addr, word }],
+    }
+}
+
+/// Render a PPC conditional-branch condition string from the BO/BI fields,
+/// matching the aliases the disassembler emits (beq/bne/blt/...).
+fn ppc_cond_string(bo: u32, bi: u32) -> String {
+    match (bo, bi) {
+        (12, 0) => "cr0 < 0".into(),
+        (4, 1) => "cr0 <= 0".into(),
+        (12, 2) => "cr0 == 0".into(),
+        (4, 0) => "cr0 >= 0".into(),
+        (12, 1) => "cr0 > 0".into(),
+        (4, 2) => "cr0 != 0".into(),
+        (12, 3) => "cr0 < 0 (so)".into(),
+        (4, 3) => "cr0 >= 0 (ns)".into(),
+        _ => format!("bo={}, bi={}", bo, bi),
+    }
+}
+
+/// Result of linearly decompiling a PPC code region.
+///
+/// This is the PPC analogue of [`Decompilation`] but uses a *linear* sweep
+/// (no per-function CFG) — a first-pass "initial IL" view, like Binary
+/// Ninja's first pass. It lifts every 4-byte word with [`lift_ppc_instruction`]
+/// and renders it with [`render_stmt`], emitting `loc_` labels at the branch
+/// targets so the output stays navigable. A full recursive-descent PPC CFG is
+/// the natural follow-up (PPC has no delay slots, so it is simpler than MIPS).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PpcDecompilation {
+    pub base: u32,
+    pub pseudocode: String,
+    pub stmt_count: usize,
+    pub instr_count: usize,
+}
+
+/// Linearly decompile a PPC code region to C-like pseudocode.
+///
+/// `data` is the raw instruction bytes (read big-endian, 4 bytes per word).
+/// `base` is the region's load address. `known_funcs` maps call targets to
+/// names so `bl` renders as `name(...)`.
+pub fn decompile_ppc_section(
+    data: &[u8],
+    base: u32,
+    known_funcs: &BTreeMap<u32, String>,
+) -> PpcDecompilation {
+    // First pass: collect branch targets that need labels.
+    let mut label_targets: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let word_count = data.len() / 4;
+    for i in 0..word_count {
+        let off = i * 4;
+        let word = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        let addr = base.wrapping_add(off as u32);
+        for s in lift_ppc_instruction(word, addr, known_funcs) {
+            match &s {
+                IrStmt::Goto { label } | IrStmt::CondGoto { label, .. } => {
+                    // Labels are loc_XXXXXXXX; parse the address back out.
+                    if let Some(hex) = label.strip_prefix("loc_") {
+                        if let Ok(t) = u32::from_str_radix(hex, 16) {
+                            label_targets.insert(t);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("// PPC decompilation (linear first-pass) from 0x{:08X}\n", base));
+    out.push_str(&format!("void sub_{:08X}() {{\n", base));
+
+    let mut stmt_count = 0;
+    for i in 0..word_count {
+        let off = i * 4;
+        let addr = base.wrapping_add(off as u32);
+        if i > 0 && label_targets.contains(&addr) {
+            out.push_str(&format!("  {}:\n", label_for(addr)));
+        }
+        let word = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+        for s in lift_ppc_instruction(word, addr, known_funcs) {
+            stmt_count += 1;
+            let line = render_stmt(&s);
+            if !line.is_empty() {
+                out.push_str("  ");
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+    }
+    out.push_str("}\n");
+
+    PpcDecompilation {
+        base,
+        pseudocode: out,
+        stmt_count,
+        instr_count: word_count,
+    }
+}
 // ---------------------------------------------------------------------------
 // Function decompiler: CFG + lift -> pseudocode text
 // ---------------------------------------------------------------------------
@@ -304,7 +526,7 @@ pub fn decompile_function(
 }
 
 /// Render a single IR statement as a pseudocode line (no trailing newline).
-fn render_stmt(s: &IrStmt) -> String {
+pub fn render_stmt(s: &IrStmt) -> String {
     match s {
         IrStmt::Assign { dst, src } => format!("{} = {};", dst, src),
         IrStmt::BinOp { dst, op, a, b } => format!("{} = {} {} {};", dst, a, op, b),

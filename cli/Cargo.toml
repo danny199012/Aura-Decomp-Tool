@@ -3,10 +3,12 @@ name = "aura-cli"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.70"
-description = "Command-line interface for Aura Decomp Tool"
+description = "Command-line interface and shared analysis library for Aura Decomp Tool"
 
 # The CLI links the shared analysis engine (src-tauri/src) directly via #[path]
-# includes, so it builds without Tauri and produces a tiny standalone binary.
+# includes in src/lib.rs, so it builds without Tauri and produces a tiny
+# standalone binary. The same library is also the public API consumed by the
+# test suite, so the module wiring lives in exactly one place.
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -14,6 +16,11 @@ sha1 = "0.10"
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
+[lib]
+name = "aura_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "aura-cli"
 path = "src/main.rs"
+

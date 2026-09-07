@@ -299,8 +299,20 @@ impl SceSymbolDatabase {
     /// Load the embedded database snapshot. Parses both JSON blobs; on the
     /// 9k+ function variants this is a few hundred ms once per process.
     pub fn load_embedded() -> Result<Self, String> {
+        Self::load_from_json(SYMBOLS_JSON, TREE_JSON)
+    }
+
+    /// Load a database from caller-supplied JSON text. This is the parsing core
+    /// shared by [`load_embedded`] and [`load_from_files`]; factoring it out is
+    /// what lets users supply an *external* `symbols.json` + `tree.json` to
+    /// extend the built-in set without rebuilding the binary.
+    ///
+    /// The two strings use the exact same schema as the embedded snapshot
+    /// (see the module docs), so a user-provided file is interchangeable with
+    /// the bundled one.
+    pub fn load_from_json(symbols_json: &str, tree_json: &str) -> Result<Self, String> {
         let root_json: serde_json::Value =
-            serde_json::from_str(SYMBOLS_JSON).map_err(|e| format!("symbols.json: {}", e))?;
+            serde_json::from_str(symbols_json).map_err(|e| format!("symbols.json: {}", e))?;
 
         let mut symbols: HashMap<String, SymbolRecord> = HashMap::new();
 
@@ -361,13 +373,59 @@ impl SceSymbolDatabase {
         }
 
         let tree_root: TreeNode =
-            serde_json::from_str(TREE_JSON).map_err(|e| format!("tree.json: {}", e))?;
+            serde_json::from_str(tree_json).map_err(|e| format!("tree.json: {}", e))?;
         let root = Box::new(parse_node(tree_root));
 
         Ok(Self {
             symbols,
             root: Some(root),
         })
+    }
+
+    /// Load a database from two files on disk (`symbols.json` + `tree.json`).
+    ///
+    /// This is the user-facing entry point for contributing new SDK
+    /// fingerprints: drop a `symbols.json` / `tree.json` pair (same schema as
+    /// the embedded snapshot) somewhere and pass the paths here. Pair it with
+    /// [`SceSymbolDatabase::merge`] to layer the user DB on top of the
+    /// built-in one.
+    pub fn load_from_files<P: AsRef<std::path::Path>>(
+        symbols_path: P,
+        tree_path: P,
+    ) -> Result<Self, String> {
+        let symbols_json = std::fs::read_to_string(symbols_path)
+            .map_err(|e| format!("reading symbols.json: {e}"))?;
+        let tree_json = std::fs::read_to_string(tree_path)
+            .map_err(|e| format!("reading tree.json: {e}"))?;
+        Self::load_from_json(&symbols_json, &tree_json)
+    }
+
+    /// Merge another database (`other`) into this one.
+    ///
+    /// Entries from `other` are inserted, overwriting any existing entry with
+    /// the same `(library, name, hash, variant)` key — so a user-supplied DB
+    /// can both *add* new symbols and *correct* built-in ones. The trie roots
+    /// are concatenated: edges of `other`'s root become additional children of
+    /// this database's root (offset-0 edges are order-independent, which is
+    /// exactly how the embedded tree itself was built). If this DB has no root
+    /// yet, `other`'s root is adopted wholesale.
+    pub fn merge(&mut self, other: SceSymbolDatabase) {
+        self.symbols.extend(other.symbols);
+        match (&mut self.root, other.root) {
+            (Some(existing), Some(incoming)) => {
+                // Both roots sit at their own offset (typically 0); splice the
+                // incoming edges into the existing root so both sets are walked.
+                existing.next.extend(incoming.next);
+                existing.symbols.extend(incoming.symbols);
+                // Keep the smaller offset (they should match; if not, prefer
+                // the existing tree's entry point).
+                if incoming.offset < existing.offset {
+                    existing.offset = incoming.offset;
+                }
+            }
+            (None, incoming) => self.root = incoming,
+            (Some(_), None) => {} // nothing to add
+        }
     }
 
     /// Total number of symbol variants in the loaded database (all functions
