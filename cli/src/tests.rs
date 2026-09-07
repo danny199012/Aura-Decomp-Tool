@@ -670,6 +670,105 @@ mod ps4ps5_tests {
 }
 
 // ===========================================================================
+// ps4ps5.rs — .dynsym NID extraction + aerolib resolution
+// ===========================================================================
+
+mod ps4_nid_scan_tests {
+    use super::*;
+
+    /// Build a minimal LE ELF64 x86-64 with `.dynsym` + `.dynstr` carrying
+    /// NID-style symbol names so scan_ps4_nids has something to walk.
+    fn elf64_with_dynsym_nids() -> Vec<u8> {
+        // Layout: ELF header (0x40) | section headers (5×64=0x140, ends 0x180) |
+        // .shstrtab (0x180) | .dynstr (0x1A0) | .dynsym (0x1C0) | .text (0x200)
+        let sh_off: u64 = 0x40;
+        let shstrtab_off: u64 = 0x180;
+        let shstrtab: &[u8] = b"\0.shstrtab\0.text\0.dynsym\0.dynstr\0";
+        let dynstr_off: u64 = 0x1A0;
+        let dynstr: &[u8] = b"\0ys1W6EwuVw4\0printf\0";
+        let dynsym_off: u64 = 0x1C0;
+        let text_off: u64 = 0x200;
+        let text_addr: u64 = 0x401000;
+
+        let n_shstrtab: u32 = 1; let n_text: u32 = 11; let n_dynsym: u32 = 17; let n_dynstr: u32 = 25;
+        let d_nid: u32 = 1; let d_printf: u32 = 13;
+
+        let mut buf = vec![0u8; 0x210];
+        buf[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        buf[4] = 2; buf[5] = 1; buf[6] = 1;
+        buf[16..18].copy_from_slice(&2u16.to_le_bytes());
+        buf[18..20].copy_from_slice(&62u16.to_le_bytes());
+        buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        buf[24..32].copy_from_slice(&text_addr.to_le_bytes());
+        buf[40..48].copy_from_slice(&sh_off.to_le_bytes());
+        buf[52..54].copy_from_slice(&64u16.to_le_bytes());
+        buf[58..60].copy_from_slice(&64u16.to_le_bytes());
+        buf[60..62].copy_from_slice(&5u16.to_le_bytes());
+        buf[62..64].copy_from_slice(&1u16.to_le_bytes());
+
+        // Write one 64-byte section header at index `i`.
+        macro_rules! w_sec {
+            ($i:expr, $name:expr, $ty:expr, $flags:expr, $addr:expr, $off:expr, $size:expr) => {{
+                let s = sh_off as usize + $i * 64;
+                buf[s..s + 4].copy_from_slice(&$name.to_le_bytes());
+                buf[s + 4..s + 8].copy_from_slice(&$ty.to_le_bytes());
+                buf[s + 8..s + 16].copy_from_slice(&$flags.to_le_bytes());
+                buf[s + 16..s + 24].copy_from_slice(&$addr.to_le_bytes());
+                buf[s + 24..s + 32].copy_from_slice(&$off.to_le_bytes());
+                buf[s + 32..s + 40].copy_from_slice(&$size.to_le_bytes());
+            }};
+        }
+        w_sec!(0, 0u32, 0u32, 0u64, 0u64, 0u64, 0u64);
+        w_sec!(1, n_shstrtab, 3u32, 0u64, 0u64, shstrtab_off, shstrtab.len() as u64);
+        w_sec!(2, n_text, 1u32, 0x6u64, text_addr, text_off, 1u64);
+        w_sec!(3, n_dynsym, 11u32, 0u64, 0u64, dynsym_off, 72u64);
+        w_sec!(4, n_dynstr, 3u32, 0u64, 0u64, dynstr_off, dynstr.len() as u64);
+
+        buf[shstrtab_off as usize..shstrtab_off as usize + shstrtab.len()].copy_from_slice(shstrtab);
+        buf[dynstr_off as usize..dynstr_off as usize + dynstr.len()].copy_from_slice(dynstr);
+
+        // .dynsym: 3 Elf64_Sym (24 bytes each). Entry 0 = null.
+        let s1 = dynsym_off as usize + 24; // NID symbol
+        buf[s1..s1 + 4].copy_from_slice(&d_nid.to_le_bytes());
+        buf[s1 + 4] = 0x12; // GLOBAL FUNC
+        buf[s1 + 8..s1 + 16].copy_from_slice(&text_addr.to_le_bytes());
+        let s2 = dynsym_off as usize + 48; // plain-named symbol
+        buf[s2..s2 + 4].copy_from_slice(&d_printf.to_le_bytes());
+        buf[s2 + 4] = 0x12;
+        buf[s2 + 8..s2 + 16].copy_from_slice(&0x401010u64.to_le_bytes());
+
+        buf[text_off as usize] = 0xC3;
+        buf
+    }
+
+    #[test]
+    fn scan_ps4_nids_extracts_nid_symbol() {
+        let elf = elf64_with_dynsym_nids();
+        let matches = crate::ps4ps5::scan_ps4_nids(&elf).expect("scan");
+        assert_eq!(matches.len(), 2, "matches: {:?}", matches);
+        let nid = matches.iter().find(|m| m.nid == "ys1W6EwuVw4").expect("NID entry");
+        assert_eq!(nid.address, 0x401000);
+        assert_eq!(nid.kind, "function");
+        assert!(!nid.resolved, "should be unresolved without AURA_PS4_NID_DB");
+        assert_eq!(nid.name, "ys1W6EwuVw4");
+    }
+
+    #[test]
+    fn scan_ps4_nids_passes_through_plain_names() {
+        let elf = elf64_with_dynsym_nids();
+        let matches = crate::ps4ps5::scan_ps4_nids(&elf).expect("scan");
+        let printf = matches.iter().find(|m| m.name.contains("printf")).expect("printf entry");
+        assert!(!printf.resolved, "plain name not in DB");
+    }
+
+    #[test]
+    fn scan_ps4_nids_rejects_non_ps4() {
+        let r = crate::ps4ps5::scan_ps4_nids(&[0u8; 64]);
+        assert!(r.is_err(), "garbage should error, not panic");
+    }
+}
+
+// ===========================================================================
 // ps3.rs — big-endian ELF / SELF detection
 // ===========================================================================
 

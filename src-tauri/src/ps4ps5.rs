@@ -276,3 +276,122 @@ pub fn disassemble_x64(data: &[u8], display_address: u64, max_instructions: usiz
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// PS4/PS5 NID resolution — rename imports/exports via the NID database.
+//
+// PS4 Orbis modules identify SDK symbols by NID. In a stripped retail
+// .sprx/.self the `.dynsym` entries carry the NID where a normal ELF would
+// carry a symbol-name string offset: the name string in `.dynstr` is the
+// base64-encoded NID (11 chars, e.g. "ys1W6EwuVw4"), optionally followed by a
+// `#` library selector. We parse `.dynsym` (Elf64_Sym, 24 bytes each), read
+// each name from `.dynstr`, take the first 11 chars as the NID, and look it
+// up in the NID database (aerolib.csv) to recover the real C symbol name.
+// ---------------------------------------------------------------------------
+
+/// One resolved PS4/PS5 symbol: an address + the NID found there + the
+/// human-readable name the NID database maps it to (if known).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ps4NidMatch {
+    /// `st_value` — the function/object address in the loaded image.
+    pub address: u64,
+    /// The raw NID string (first 11 chars of the dynamic symbol name).
+    pub nid: String,
+    /// The resolved symbol name, or the NID if the DB doesn't know it.
+    pub name: String,
+    /// Whether the NID was found in the database (i.e. `name` is a real name).
+    pub resolved: bool,
+    /// "function" or "object" (from st_info type bits).
+    pub kind: String,
+}
+
+/// Scan a PS4/PS5 binary's dynamic symbol table and resolve NIDs against the
+/// loaded NID database.
+///
+/// Returns one `Ps4NidMatch` per dynamic symbol that carries a NID-style name
+/// (an 11-char base64 token). Symbols whose names are ordinary strings
+/// (not NIDs) are passed through with `resolved=false` and `name == nid` only
+/// when the DB has no entry — i.e. this never discards real names the binary
+/// already carries. If the NID DB is empty (no `AURA_PS4_NID_DB`), every entry
+/// comes back with `resolved=false` and the raw NID as the name, so callers
+/// can still see what NIDs are present.
+pub fn scan_ps4_nids(data: &[u8]) -> Result<Vec<Ps4NidMatch>, String> {
+    let info = parse_ps4ps5(data, "ps4")?;
+    if info.encrypted {
+        return Err("PS4/PS5 SELF is encrypted — NID scan not possible".into());
+    }
+    // Locate .dynsym and .dynstr by name. PS4 homebrew ELFs use standard
+    // section names; fSELF containers expose the same embedded ELF.
+    let dynsym = info.sections.iter().find(|s| s.name == ".dynsym")
+        .ok_or_else(|| "no .dynsym section (not a dynamic PS4 module?)".to_string())?;
+    let dynstr = info.sections.iter().find(|s| s.name == ".dynstr")
+        .ok_or_else(|| "no .dynstr section (not a dynamic PS4 module?)".to_string())?;
+
+    let sym_off = dynsym.sh_offset as usize;
+    let sym_end = (sym_off + dynsym.sh_size as usize).min(data.len());
+    let str_off = dynstr.sh_offset as usize;
+    let str_end = (str_off + dynstr.sh_size as usize).min(data.len());
+    if sym_off >= data.len() || str_off >= data.len() {
+        return Err(".dynsym/.dynstr points outside the file".into());
+    }
+    let sym_bytes = &data[sym_off..sym_end];
+    let str_bytes = &data[str_off..str_end];
+
+    // Elf64_Sym is 24 bytes: st_name(u32) st_info(u8) st_other(u8) st_shndx(u16)
+    // st_value(u64) st_size(u64), all little-endian.
+    const SYM_SIZE: usize = 24;
+    let db = crate::nid_db::ps4_nid_db().as_ref().map_err(|e| e.clone())?;
+    let mut matches = Vec::new();
+    for chunk in sym_bytes.chunks_exact(SYM_SIZE) {
+        let st_name = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as usize;
+        let st_info = chunk[4];
+        let st_value = u64::from_le_bytes([
+            chunk[8], chunk[9], chunk[10], chunk[11], chunk[12], chunk[13], chunk[14], chunk[15],
+        ]);
+        // st_name == 0 is the reserved null symbol; skip it.
+        if st_name == 0 {
+            continue;
+        }
+        // Read the NUL-terminated name string from .dynstr.
+        let name = read_cstr(str_bytes, st_name);
+        if name.is_empty() {
+            continue;
+        }
+        // The NID is the first 11 characters of the name (aerolib keys are
+        // 11-char base64 tokens). Names that aren't NIDs still pass through so
+        // the caller sees real symbol names the binary already carries.
+        let nid_key: String = name.chars().take(11).collect();
+        let kind = match st_info & 0xF {
+            2 => "function",
+            1 => "object",
+            _ => "other",
+        };
+        match db.lookup(&nid_key) {
+            Some(resolved) => matches.push(Ps4NidMatch {
+                address: st_value,
+                nid: nid_key,
+                name: resolved.to_string(),
+                resolved: true,
+                kind: kind.to_string(),
+            }),
+            None => matches.push(Ps4NidMatch {
+                address: st_value,
+                nid: nid_key.clone(),
+                name: if name.len() > 11 { name.clone() } else { nid_key },
+                resolved: false,
+                kind: kind.to_string(),
+            }),
+        }
+    }
+    Ok(matches)
+}
+
+/// Read a NUL-terminated string at `offset` within `strtab`, returning "" if
+/// the offset is out of range. Never panics on a truncated string table.
+fn read_cstr(strtab: &[u8], offset: usize) -> String {
+    if offset >= strtab.len() {
+        return String::new();
+    }
+    let end = strtab[offset..].iter().position(|&b| b == 0).map(|n| offset + n).unwrap_or(strtab.len());
+    String::from_utf8_lossy(&strtab[offset..end]).to_string()
+}

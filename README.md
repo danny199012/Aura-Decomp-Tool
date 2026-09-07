@@ -30,6 +30,7 @@ A cross-platform decompiler and reverse-engineering toolkit for PlayStation (PS1
 ### PS4/PS5 NID Database
 PS4/PS5 Orbis binaries identify SDK imports and exports by **NID** (a 64-bit identifier) rather than by name — stripped retail `.sprx`/`.self` carry NIDs where a normal ELF carries symbol names. The community **aerolib.csv** database (~97,000 entries) maps those NIDs back to real C symbol names (`printf`, `scePadRead`, …) — the PS4/PS5 analogue of the PS2 SCE SDK SHA-1 fingerprint DB.
 - **External load** — aerolib.csv is GPL-3.0, so it is *not* embedded (to keep Aura's licensing clean). Download `aerolib.csv` yourself and point `AURA_PS4_NID_DB` at it; the DB is then available for PS4 NID→name resolution. Inspect the loaded state with `aura-cli nid-db [--json]`.
+- **`.dynsym` NID extraction** — `aura-cli ps4-nid-scan <file> [--json]` parses a PS4/PS5 binary's dynamic symbol table, extracts the NID from each symbol name (the first 11 chars, the base64 token), looks it up in the aerolib DB, and reports each symbol's address + NID + resolved name. Symbols the binary already names (non-NID strings) pass through unchanged. This is the PS4 analogue of `aura-cli sdk-scan` for PS2.
 - When the env var is unset, NID-based renaming is a graceful no-op and every other feature keeps working.
 
 ### Call Graph Analysis
@@ -395,8 +396,9 @@ aura-cli export game.elf --platform PS4 --out ./decomp
 aura-cli formats --json
 aura-cli sdk-db --json
 aura-cli nid-db --json
+aura-cli ps4-nid-scan eboot.bin --json
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to enable PS4/PS5 NID→name resolution.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to enable PS4/PS5 NID→name resolution.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.
