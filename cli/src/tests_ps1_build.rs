@@ -774,3 +774,109 @@ mod download_tests {
         assert!(e.contains("Downloading the build toolchain failed"), "{e}");
     }
 }
+
+// ===========================================================================
+// A short image: say how much is missing and whether it matters
+// ===========================================================================
+
+mod truncation_tests {
+    use super::*;
+    use crate::ps2_ingest;
+
+    const MARKER: &str = "Sony Computer Entertainment Inc. for North America area";
+
+    /// SYSTEM.CNF (1 sector), the boot program (11 sectors), DATA.BIN (5), in
+    /// that order, so DATA.BIN is what a cut reaches first.
+    fn image() -> Vec<u8> {
+        ps1_iso("SLUS_004.04", psx_exe_bytes(0x8001_0000, 0x8001_0000, 20_000, MARKER))
+    }
+
+    fn cut(sectors: usize) -> Vec<u8> {
+        let mut b = image();
+        b.truncate(b.len() - sectors * 2048);
+        b
+    }
+
+    fn write(t: &TempDir, bytes: Vec<u8>) -> String {
+        let p = t.path().join("Cut Game (USA).iso");
+        std::fs::write(&p, bytes).unwrap();
+        p.to_string_lossy().to_string()
+    }
+
+    fn ingest(t: &TempDir, image: &str) -> ps1_ingest::Ps1IngestResult {
+        let opts = Ps1IngestOptions { out_root: t.path().join("games").to_string_lossy().to_string() };
+        ps1_ingest::ingest_ps1(image, &opts, &mut |_| true).unwrap()
+    }
+
+    #[test]
+    fn a_complete_image_has_nothing_to_say() {
+        let t = TempDir::new("trunc-none");
+        let info = ps2_ingest::inspect_image(&write(&t, image())).unwrap();
+        assert!(!info.truncated);
+        assert_eq!((info.missing_sectors, info.files_past_cut, info.boot_past_cut), (0, 0, false));
+        assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    }
+
+    #[test]
+    fn missing_blank_sectors_past_every_file_are_harmless() {
+        let t = TempDir::new("trunc-blank");
+        // The descriptor claims 10 sectors more than the file holds; nothing lives there.
+        let mut b = image();
+        let total = (b.len() / 2048) as u32 + 10;
+        b[16 * 2048 + 80..16 * 2048 + 84].copy_from_slice(&total.to_le_bytes());
+        b[16 * 2048 + 84..16 * 2048 + 88].copy_from_slice(&total.to_be_bytes());
+        let path = write(&t, b);
+
+        let info = ps2_ingest::inspect_image(&path).unwrap();
+        assert!(info.truncated);
+        assert_eq!((info.missing_sectors, info.files_past_cut, info.boot_past_cut), (10, 0, false));
+        assert!(info.can_ingest);
+        assert_eq!(info.warnings.len(), 1, "{:?}", info.warnings);
+        let w = &info.warnings[0];
+        assert!(w.contains("10 short"), "{w}");
+        assert!(w.contains("No file in the disc's directory reaches into the missing part"), "{w}");
+        assert!(w.contains("every file the build needs is readable"), "{w}");
+        assert!(!w.contains("cannot work") && !w.contains("unlikely"), "{w}");
+
+        // The workspace carries the same single note, with no blanket verdict added.
+        let r = ingest(&t, &path);
+        assert_eq!(r.warnings, info.warnings);
+    }
+
+    #[test]
+    fn a_cut_through_a_data_file_leaves_the_build_intact() {
+        let t = TempDir::new("trunc-data");
+        let path = write(&t, cut(3));
+        let info = ps2_ingest::inspect_image(&path).unwrap();
+        assert!(info.truncated && info.can_ingest);
+        assert_eq!((info.missing_sectors, info.files_past_cut, info.boot_past_cut), (3, 1, false));
+        assert_eq!(info.warnings.len(), 1, "{:?}", info.warnings);
+        let w = &info.warnings[0];
+        assert!(w.contains("1 of 3 file(s)") && w.contains("DATA.BIN"), "{w}");
+        assert!(w.contains("boot program (SLUS_004.04) is intact") && w.contains("build can go ahead"), "{w}");
+        assert!(!w.contains("unlikely to work"), "{w}");
+
+        let r = ingest(&t, &path);
+        assert_eq!(r.warnings.len(), 1, "one note, not two: {:?}", r.warnings);
+        assert!(r.warnings[0].contains("DATA.BIN"));
+    }
+
+    #[test]
+    fn a_cut_through_the_boot_program_is_called_out_once() {
+        let t = TempDir::new("trunc-boot");
+        // DATA.BIN (5 sectors) is gone and so are the last 4 of the boot program.
+        let path = write(&t, cut(9));
+        let info = ps2_ingest::inspect_image(&path).unwrap();
+        assert!(info.truncated);
+        assert_eq!((info.missing_sectors, info.files_past_cut, info.boot_past_cut), (9, 2, true));
+        // Its 2 KiB header is still readable, so the disc is still recognised.
+        assert!(info.can_ingest);
+        let w = &info.warnings[0];
+        assert!(w.contains("boot program (SLUS_004.04) itself reaches past the end of the image"), "{w}");
+        assert!(w.contains("cannot work"), "{w}");
+
+        let r = ingest(&t, &path);
+        assert_eq!(r.warnings.len(), 1, "{:?}", r.warnings);
+        assert!(r.warnings[0].contains("cannot work"));
+    }
+}

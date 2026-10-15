@@ -247,7 +247,32 @@ impl<R: Read + Seek> DiscImage<R> {
     /// True when the volume descriptor claims more sectors than the file holds
     /// (an incomplete download/dump). Files stored before the cut still read.
     pub fn is_truncated(&self) -> bool {
-        (self.volume.volume_sectors as u64) > self.total_sectors
+        self.missing_sectors() > 0
+    }
+
+    /// Sectors the image actually holds.
+    pub fn held_sectors(&self) -> u64 {
+        self.total_sectors
+    }
+
+    /// How many sectors the volume descriptor claims beyond what the image
+    /// holds (0 for a complete image). A dump that only lacks trailing blank
+    /// sectors is a small number that no file reaches into.
+    pub fn missing_sectors(&self) -> u64 {
+        (self.volume.volume_sectors as u64).saturating_sub(self.total_sectors)
+    }
+
+    /// True when any part of the file's data lies at or past the end of the
+    /// image, so it cannot be read in full. Directories are never "cut".
+    pub fn entry_is_cut(&self, e: &DiscEntry) -> bool {
+        if e.is_dir || e.size == 0 {
+            return false;
+        }
+        let whole = [(e.lba, e.size)];
+        let extents: &[(u32, u64)] = if e.extents.is_empty() { &whole } else { &e.extents };
+        extents.iter().any(|(lba, bytes)| {
+            *bytes > 0 && (*lba as u64).saturating_add(bytes.div_ceil(SECTOR_DATA)) > self.total_sectors
+        })
     }
 
     /// Append `count` sectors of user data starting at `lba` to `out`.
