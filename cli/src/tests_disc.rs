@@ -300,7 +300,23 @@ fn irx() -> Vec<u8> {
 }
 
 fn ps2_disc(with_sections: bool) -> Vec<u8> {
-    let root = vec![
+    ps2_disc_with_filler(with_sections, 0)
+}
+
+/// Like [`ps2_disc`] plus `filler` small asset files spread over many
+/// directories — a disc shaped like a real game, which has thousands of files.
+fn ps2_disc_with_filler(with_sections: bool, filler: usize) -> Vec<u8> {
+    let mut assets: Vec<(String, Node)> = Vec::new();
+    for d in 0..filler.div_ceil(200) {
+        let mut kids = Vec::new();
+        for i in (d * 200)..((d + 1) * 200).min(filler) {
+            // 200 B .. ~24 KB, deterministic.
+            let len = 200 + (i * 7919) % 24_000;
+            kids.push((format!("F{i:05}.DAT"), Node::File(vec![(i % 251) as u8; len])));
+        }
+        assets.push((format!("D{d:03}"), Node::Dir(kids)));
+    }
+    let mut root = vec![
         ("SYSTEM.CNF".to_string(), Node::File(b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n".to_vec())),
         ("SLUS_203.12".to_string(), Node::File(ps2_elf(with_sections))),
         ("IOP".to_string(), Node::Dir(vec![("SIO2MAN.IRX".to_string(), Node::File(irx()))])),
@@ -312,6 +328,9 @@ fn ps2_disc(with_sections: bool) -> Vec<u8> {
             ]),
         ),
     ];
+    if filler > 0 {
+        root.push(("FILES".to_string(), Node::Dir(assets)));
+    }
     build_iso("TEST_GAME", &root)
 }
 
@@ -888,6 +907,50 @@ mod pipeline_tests {
         assert_eq!(big.len(), 5000);
     }
 
+    /// Regression: a real disc has thousands of small files and extraction used
+    /// to report once per file, i.e. hundreds of callbacks per second (8,101
+    /// webview events for an 8,005-file disc), each one a re-render in the GUI.
+    #[test]
+    fn progress_is_rate_limited_for_many_small_files() {
+        let t = TempDir::new("ingest-flood");
+        let files = 3000;
+        let img = write_image(&t, "big.iso", &ps2_disc_with_filler(false, files));
+        let opts = IngestOptions { out_root: t.path().join("out").to_string_lossy().to_string(), mode: ExtractMode::All, recompiler: None };
+        let mut calls = 0usize;
+        let mut stages: Vec<String> = vec![];
+        let mut last: Option<ps2_ingest::IngestProgress> = None;
+        let res = ps2_ingest::ingest_ps2(&img, &opts, &mut |p| {
+            calls += 1;
+            if stages.last() != Some(&p.stage) {
+                stages.push(p.stage.clone());
+            }
+            last = Some(p.clone());
+            true
+        })
+        .unwrap();
+        assert_eq!(res.extracted_files, files + 5);
+        assert!(calls >= 6, "every stage must still be reported, got {calls} calls");
+        assert!(
+            calls < files / 10,
+            "progress must be throttled: {calls} callbacks for {files} files"
+        );
+        assert_eq!(stages, ["open", "inspect", "extract", "analyze", "config", "done"]);
+        let last = last.unwrap();
+        assert_eq!(last.stage, "done");
+        assert_eq!(last.fraction, 1.0);
+    }
+
+    #[test]
+    fn cancel_is_honoured_when_it_arrives_on_a_later_stage() {
+        let t = TempDir::new("ingest-cancel-late");
+        let img = write_image(&t, "game.iso", &ps2_disc_with_filler(false, 400));
+        let opts = IngestOptions { out_root: t.path().join("out").to_string_lossy().to_string(), mode: ExtractMode::All, recompiler: None };
+        // Cancel only once extraction is over. Extraction's own calls were
+        // throttled away, but the stage change must still get through.
+        let err = ps2_ingest::ingest_ps2(&img, &opts, &mut |p| p.stage != "analyze").unwrap_err();
+        assert!(err.to_lowercase().contains("cancel"), "{err}");
+    }
+
     #[test]
     fn ingest_can_be_cancelled() {
         let t = TempDir::new("ingest-cancel");
@@ -1044,6 +1107,8 @@ mod recompiler_tests {
 /// ```
 ///
 /// Output path: `$AURA_SAMPLE_ISO_OUT`, else `<temp dir>/aura-sample-ps2.iso`.
+/// Set `AURA_SAMPLE_ISO_FILES=N` to add N small filler files (a real game has
+/// thousands) for exercising progress reporting and extraction speed.
 /// The image has a valid `SYSTEM.CNF`, a tiny MIPS boot ELF (no section
 /// headers, like many retail executables) and some filler "assets". It contains
 /// no game code or data.
@@ -1053,6 +1118,10 @@ fn write_sample_ps2_iso() {
     let out = std::env::var_os("AURA_SAMPLE_ISO_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("aura-sample-ps2.iso"));
-    std::fs::write(&out, ps2_disc(false)).expect("write sample iso");
-    println!("sample PS2 disc written to {}", out.display());
+    let filler: usize = std::env::var("AURA_SAMPLE_ISO_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    std::fs::write(&out, ps2_disc_with_filler(false, filler)).expect("write sample iso");
+    println!("sample PS2 disc ({filler} filler files) written to {}", out.display());
 }

@@ -25,7 +25,7 @@ use std::fs;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // SYSTEM.CNF / serial / region
@@ -468,19 +468,61 @@ pub fn plan_extraction<R: Read + Seek>(
     plan_from_analysis(&a, entries, mode)
 }
 
-fn report(
-    cb: &mut dyn FnMut(&IngestProgress) -> bool,
-    stage: &str,
-    message: &str,
-    fraction: f64,
-) -> Result<(), String> {
+/// Minimum gap between two progress callbacks within one stage.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Rate-limits progress callbacks.
+///
+/// Extraction reports once per file, and a real game has thousands of small
+/// files, so an unthrottled consumer is called hundreds of times a second
+/// (measured: ~800 events/s, 8,101 events for an 8,005-file disc). The GUI turns
+/// each one into a webview event and a re-render, which is pure waste. A stage
+/// change or completion always passes; otherwise at most one call per
+/// [`PROGRESS_INTERVAL`]. Once the consumer asks to cancel, every later call
+/// reports "cancelled" without invoking it again.
+struct Throttle<'a> {
+    cb: &'a mut dyn FnMut(&IngestProgress) -> bool,
+    last_stage: String,
+    last_at: Option<Instant>,
+    cancelled: bool,
+}
+
+impl<'a> Throttle<'a> {
+    fn new(cb: &'a mut dyn FnMut(&IngestProgress) -> bool) -> Self {
+        Throttle { cb, last_stage: String::new(), last_at: None, cancelled: false }
+    }
+
+    /// Returns `false` once the consumer has asked to cancel.
+    fn call(&mut self, p: &IngestProgress) -> bool {
+        if self.cancelled {
+            return false;
+        }
+        let due = p.stage != self.last_stage
+            || p.fraction >= 1.0
+            || self.last_at.map_or(true, |t| t.elapsed() >= PROGRESS_INTERVAL);
+        if !due {
+            return true;
+        }
+        self.last_stage.clear();
+        self.last_stage.push_str(&p.stage);
+        self.last_at = Some(Instant::now());
+        if (self.cb)(p) {
+            true
+        } else {
+            self.cancelled = true;
+            false
+        }
+    }
+}
+
+fn report(t: &mut Throttle, stage: &str, message: &str, fraction: f64) -> Result<(), String> {
     let p = IngestProgress {
         stage: stage.into(),
         message: message.into(),
         fraction: fraction.clamp(0.0, 1.0),
         ..Default::default()
     };
-    if cb(&p) { Ok(()) } else { Err("Cancelled".into()) }
+    if t.call(&p) { Ok(()) } else { Err("Cancelled".into()) }
 }
 
 /// Run the one-click PS2 pipeline. `progress` returns `false` to cancel.
@@ -489,6 +531,8 @@ pub fn ingest_ps2(
     opts: &IngestOptions,
     progress: &mut dyn FnMut(&IngestProgress) -> bool,
 ) -> Result<IngestResult, String> {
+    let mut throttle = Throttle::new(progress);
+    let progress = &mut throttle;
     report(progress, "open", "Opening disc image…", 0.0)?;
     let (mut img, _opened) = disc::open_disc_file(image_path)?;
 
@@ -557,7 +601,7 @@ pub fn ingest_ps2(
             } else {
                 1.0
             };
-            progress(&IngestProgress {
+            progress.call(&IngestProgress {
                 stage: "extract".into(),
                 message: if p.current.is_empty() { "Extracting files…".into() } else { format!("Extracting {}", p.current) },
                 fraction: 0.05 + 0.75 * frac,
@@ -640,7 +684,7 @@ pub fn ingest_ps2(
         let log = recomp_dir.join("ps2_recomp.log");
         let mut cancelled = false;
         let run = run_recompiler(Path::new(exe), &config_path, &recomp_dir, &gen_dir, &log, &mut || {
-            let ok = progress(&IngestProgress {
+            let ok = progress.call(&IngestProgress {
                 stage: "recompile".into(),
                 message: "Running ps2_recomp…".into(),
                 fraction: 0.95,

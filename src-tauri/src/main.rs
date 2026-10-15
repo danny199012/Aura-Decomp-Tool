@@ -107,58 +107,52 @@ fn log_message(level: String, message: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Why every dialog command below is `async` and runs the picker on a worker
+/// thread: a plain `fn` command executes on the app's main thread, and the
+/// dialog plugin also needs that thread to create the dialog. Blocking the
+/// main thread on a picker therefore freezes the whole window for as long as
+/// the dialog is open. Measured on the real app: a synchronous command was
+/// stuck for the full time a picker was up. Each dialog is also parented to
+/// the main window so it can never fall behind it.
+const OPEN_FILTER_ALL: &[&str] = &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds", "bin", "dat", "img", "iso", "chd", "cue", "exe"];
+
 #[tauri::command]
-fn open_file_dialog(app: tauri::AppHandle) -> Result<String, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file()
-        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
-        .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
-        .add_filter("Console Executables", &["xbe", "xex", "self", "rpx", "rpl", "exe"])
-        .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
-        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
-        .add_filter("All Files", &["*"])
-        .pick_file(move |path| {
-            if let Some(filepath) = path {
-                tx.send(filepath.to_string()).ok();
-                return;
-            }
-            tx.send(String::new()).ok();
-        });
-    // Block until the user picks or cancels — no artificial timeout. A file
-    // dialog is modal to the app window, so the callback always resolves.
-    match rx.recv() {
-        Ok(path) => {
-            if path.is_empty() {
-                Err("No file selected".to_string())
-            } else {
-                Ok(path)
-            }
-        },
-        Err(_) => Err("Dialog channel closed".to_string()),
-    }
+async fn open_file_dialog(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<String, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_parent(&window)
+            .add_filter("All Supported", OPEN_FILTER_ALL)
+            .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
+            .add_filter("Console Executables", &["xbe", "xex", "self", "rpx", "rpl", "exe"])
+            .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
+            .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
+            .add_filter("All Files", &["*"])
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))?;
+    picked.ok_or_else(|| "No file selected".to_string())
 }
 
 #[tauri::command]
-fn open_multiple_files_dialog(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file()
-        .add_filter("All Supported", &["elf", "sym", "prx", "irx", "sprx", "xbe", "xex", "self", "rpx", "rpl", "gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds", "bin", "dat", "img", "iso", "chd", "cue", "exe"])
-        .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
-        .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
-        .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
-        .add_filter("All Files", &["*"])
-        .pick_files(move |paths_opt| {
-            if let Some(paths) = paths_opt {
-                let collected: Vec<String> = paths.into_iter().map(|p| p.to_string()).collect();
-                tx.send(collected).ok();
-            } else {
-                tx.send(Vec::new()).ok();
-            }
-        });
-    match rx.recv() {
-        Ok(paths) => Ok(paths),
-        Err(_) => Ok(Vec::new()),
-    }
+async fn open_multiple_files_dialog(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_parent(&window)
+            .add_filter("All Supported", OPEN_FILTER_ALL)
+            .add_filter("ELF & Symbols", &["elf", "sym", "prx", "irx", "sprx"])
+            .add_filter("Retro ROMs", &["gb", "gbc", "gba", "nes", "smc", "sfc", "z64", "n64", "v64", "nds"])
+            .add_filter("PlayStation Images", &["bin", "dat", "img", "iso", "chd", "cue"])
+            .add_filter("All Files", &["*"])
+            .blocking_pick_files()
+            .map(|v| v.into_iter().map(|p| p.to_string()).collect())
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))
 }
 
 #[tauri::command]
@@ -683,23 +677,27 @@ fn export_functions_csv(path: String, output_csv: String) -> Result<usize, Strin
 /// Show a native save-file dialog, then write the PS2Recomp CSV there.
 /// Returns Some(count) on success, or None if the user cancelled.
 #[tauri::command]
-fn export_functions_csv_dialog(app: tauri::AppHandle, path: String) -> Result<Option<usize>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file()
-        .add_filter("CSV (PS2Recomp / Ghidra)", &["csv"])
-        .set_file_name("functions.csv")
-        .save_file(move |file_path| {
-            tx.send(file_path.map(|p| p.to_string())).ok();
-        });
-
-    let chosen = match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-        Ok(v) => v,
-        Err(_) => return Err("Save dialog timed out".to_string()),
-    };
-
-    let Some(out_path) = chosen else { return Ok(None) };
-    let count = export_functions_csv(path, out_path)?;
-    Ok(Some(count))
+async fn export_functions_csv_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<Option<usize>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let chosen = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .add_filter("CSV (PS2Recomp / Ghidra)", &["csv"])
+            .set_file_name("functions.csv")
+            .blocking_save_file()
+            .map(|p| p.to_string());
+        match chosen {
+            Some(out_path) => export_functions_csv(path, out_path).map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))?
 }
 
 /// Generate a complete, ps2recomp-valid config.toml for the given ELF.
@@ -799,17 +797,18 @@ struct ConfigResult {
 }
 
 /// Show a native folder-picker and return the chosen directory, or None if
-/// the user cancelled. Used by the "Export PS2Recomp config" flow.
+/// the user cancelled. Used by the "Export PS2Recomp config" flow and the wizard.
 #[tauri::command]
-fn pick_output_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file().pick_folder(move |folder| {
-        tx.send(folder.map(|p| p.to_string())).ok();
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(120)) {
-        Ok(v) => Ok(v),
-        Err(_) => Err("Folder picker timed out".to_string()),
-    }
+async fn pick_output_folder(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_parent(&window)
+            .blocking_pick_folder()
+            .map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))
 }
 
 #[tauri::command]
@@ -1093,26 +1092,34 @@ fn ps2_ingest_cancel() {
 
 /// Native picker for a disc image. `None` if the user cancelled.
 #[tauri::command]
-fn pick_disc_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog()
-        .file()
-        .add_filter("Disc images", &["iso", "bin", "img", "cue", "mdf", "nrg"])
-        .add_filter("All Files", &["*"])
-        .pick_file(move |p| {
-            tx.send(p.map(|f| f.to_string())).ok();
-        });
-    rx.recv().map_err(|_| "Dialog channel closed".to_string())
+async fn pick_disc_image(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_parent(&window)
+            .add_filter("Disc images", &["iso", "bin", "img", "cue", "mdf", "nrg"])
+            .add_filter("All Files", &["*"])
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))
 }
 
 /// Native picker for the `ps2_recomp` binary. `None` if the user cancelled.
 #[tauri::command]
-fn pick_recompiler(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog().file().pick_file(move |p| {
-        tx.send(p.map(|f| f.to_string())).ok();
-    });
-    rx.recv().map_err(|_| "Dialog channel closed".to_string())
+async fn pick_recompiler(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dlg = app.dialog().file().set_parent(&window);
+        if cfg!(windows) {
+            dlg = dlg.add_filter("Programs", &["exe"]);
+        }
+        dlg.add_filter("All Files", &["*"])
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))
 }
 
 /// Best-effort lookup of `ps2_recomp` (AURA_PS2RECOMP, then PATH).

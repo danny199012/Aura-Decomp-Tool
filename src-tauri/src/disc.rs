@@ -27,7 +27,7 @@
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -437,9 +437,10 @@ impl<R: Read + Seek> DiscImage<R> {
                 return Err("Extraction cancelled".into());
             }
 
-            let file = fs::File::create(&dest)
+            // Chunks arrive already large (up to 512 KiB), so write straight to
+            // the file: a per-file buffer only adds an allocation per file.
+            let mut w = fs::File::create(&dest)
                 .map_err(|er| format!("Cannot create {}: {er}", dest.display()))?;
-            let mut w = BufWriter::with_capacity(1 << 20, file);
             let mut cancelled = false;
             let base = prog.bytes_done;
             let mut file_bytes = 0u64;

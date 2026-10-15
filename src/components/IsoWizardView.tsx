@@ -227,6 +227,13 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
 
   const pct = Math.round((progress?.fraction ?? 0) * 100);
 
+  // Why the Build button is disabled, shown next to it (never a silent dead button).
+  const blocker: string | null = !outRoot
+    ? 'Choose an output folder first.'
+    : runRecompiler && !recompiler
+      ? 'Pick the ps2_recomp program, or turn off “Run it”.'
+      : null;
+
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <header className="space-y-3">
@@ -385,40 +392,55 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
                 </label>
 
                 <div className="space-y-2 rounded-lg border border-app-border bg-app-panel-soft p-3">
-                  <label className="flex items-center gap-2 text-sm text-fg">
-                    <input
-                      type="checkbox"
-                      checked={runRecompiler}
-                      onChange={(e) => setRunRecompiler(e.target.checked)}
-                    />
-                    Also run <Kbd>ps2_recomp</Kbd> when the project is written
-                  </label>
-                  {runRecompiler && (
-                    <div className="flex gap-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-fg">
+                      Run the recompiler afterwards <span className="font-normal text-fg-muted">(optional)</span>
+                    </span>
+                    <label className="flex shrink-0 items-center gap-2 text-sm text-fg">
                       <input
-                        className="flex-1 rounded-lg border border-app-border bg-app-panel px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
-                        placeholder="Path to the ps2_recomp binary"
-                        value={recompiler}
-                        onChange={(e) => setRecompiler(e.target.value)}
+                        type="checkbox"
+                        checked={runRecompiler}
+                        onChange={(e) => setRunRecompiler(e.target.checked)}
                       />
-                      <Button variant="ghost" onClick={browseRecompiler}>
-                        Browse…
-                      </Button>
-                    </div>
+                      Run it
+                    </label>
+                  </div>
+                  <p className="text-xs text-fg-muted">
+                    <Kbd>ps2_recomp</Kbd> is a <b className="text-fg-secondary">separate program</b> from the open-source
+                    PS2Recomp project that turns the config Aura writes into C++. You do <b className="text-fg-secondary">not</b>{' '}
+                    need it to finish this wizard — leave this off and Aura still writes the whole project. You can run it
+                    yourself later.
+                  </p>
+                  {runRecompiler && (
+                    <>
+                      <div className="flex gap-2">
+                        <input
+                          className="flex-1 rounded-lg border border-app-border bg-app-panel px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
+                          placeholder="Path to ps2_recomp.exe (the compiled recompiler)"
+                          value={recompiler}
+                          onChange={(e) => setRecompiler(e.target.value)}
+                        />
+                        <Button variant="ghost" onClick={browseRecompiler}>
+                          Browse…
+                        </Button>
+                      </div>
+                      <Hint>
+                        {detected
+                          ? `Found ps2_recomp at ${detected}.`
+                          : 'Not found on PATH. Pick the ps2_recomp program you built — not your game, the disc image or a config file.'}
+                      </Hint>
+                      {recompiler && !/ps2_?recomp/i.test(recompiler) && (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
+                          That file name does not look like ps2_recomp. It should be the compiled recompiler program.
+                        </div>
+                      )}
+                    </>
                   )}
-                  <Hint>
-                    {detected
-                      ? `Found ps2_recomp at ${detected}.`
-                      : 'ps2_recomp was not found on PATH. You build it from the upstream PS2Recomp project; the wizard still writes the full project without it.'}
-                  </Hint>
                 </div>
 
-                <div className="flex justify-end">
-                  <Button
-                    variant="primary"
-                    onClick={() => void start()}
-                    disabled={!outRoot || (runRecompiler && !recompiler)}
-                  >
+                <div className="flex items-center justify-end gap-3">
+                  {blocker && <span className="text-xs text-amber-200">{blocker}</span>}
+                  <Button variant="primary" onClick={() => void start()} disabled={blocker !== null}>
                     Build project
                   </Button>
                 </div>
