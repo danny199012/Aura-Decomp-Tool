@@ -510,6 +510,29 @@ mod robustness_tests {
     }
 
     #[test]
+    fn a_cut_image_says_how_much_is_missing_and_which_files_it_touches() {
+        let root = files(&[("A.BIN", &[1u8; 100]), ("B.BIN", &vec![9u8; 20_000])]);
+        let whole = build_iso("CUT", &root);
+        let sectors = (whole.len() / 2048) as u64;
+
+        let complete = open_mem(whole.clone());
+        assert!(!complete.is_truncated());
+        assert_eq!(complete.missing_sectors(), 0);
+        assert_eq!(complete.held_sectors(), sectors);
+
+        let mut bytes = whole;
+        bytes.truncate(bytes.len() - 6 * 2048); // B.BIN occupies the last 10 sectors
+        let mut img = open_mem(bytes);
+        assert!(img.is_truncated());
+        assert_eq!(img.missing_sectors(), 6);
+        assert_eq!(img.held_sectors(), sectors - 6);
+        let list = img.list_entries().unwrap();
+        assert!(!img.entry_is_cut(disc::find_entry(&list, "A.BIN").unwrap()));
+        assert!(img.entry_is_cut(disc::find_entry(&list, "B.BIN").unwrap()));
+        assert!(list.iter().filter(|e| e.is_dir).all(|d| !img.entry_is_cut(d)));
+    }
+
+    #[test]
     fn directory_loop_terminates() {
         // Root contains "LOOP", a directory record that points back at root.
         let root_lba = 18u32;

@@ -170,6 +170,10 @@ struct DiscAnalysis {
     /// Entries (indices) whose first bytes are an ELF header.
     executable_idx: Vec<usize>,
     warnings: Vec<String>,
+    /// Files that reach into the part of the image that is missing.
+    cut_files: usize,
+    /// The boot file itself reaches into the missing part.
+    boot_cut: bool,
 }
 
 /// Upper bound on how many files are sniffed for an ELF header.
@@ -187,15 +191,9 @@ fn analyze<R: Read + Seek>(img: &mut DiscImage<R>, entries: &[DiscEntry]) -> Dis
         executables: vec![],
         executable_idx: vec![],
         warnings: vec![],
+        cut_files: 0,
+        boot_cut: false,
     };
-
-    if img.is_truncated() {
-        a.warnings.push(
-            "The image is smaller than its volume descriptor claims — it looks truncated. \
-             Files stored past the cut cannot be read."
-                .into(),
-        );
-    }
 
     // SYSTEM.CNF (root only — never a nested one).
     let cnf_entry = entries
@@ -273,7 +271,70 @@ fn analyze<R: Read + Seek>(img: &mut DiscImage<R>, entries: &[DiscEntry]) -> Dis
         a.executable_idx.push(i);
         a.executables.push(ExecutableFile { path: e.path.clone(), size: e.size, kind: kind.into() });
     }
+
+    // A short image is only a problem when something we need lies in the part
+    // that is missing. Say how much is gone and what it touches.
+    if img.is_truncated() {
+        let cut: Vec<&DiscEntry> = entries.iter().filter(|e| img.entry_is_cut(e)).collect();
+        a.cut_files = cut.len();
+        a.boot_cut = a.boot_entry.map(|i| img.entry_is_cut(&entries[i])).unwrap_or(false);
+        let boot_name = a.boot_entry.map(|i| entries[i].path.clone());
+        let files = entries.iter().filter(|e| !e.is_dir).count();
+        a.warnings.push(truncation_note(img, &cut, files, boot_name.as_deref(), a.boot_cut));
+    }
     a
+}
+
+fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 4] = ["bytes", "KiB", "MiB", "GiB"];
+    let mut v = b as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 { format!("{b} bytes") } else { format!("{v:.1} {}", UNITS[u]) }
+}
+
+/// What a short image costs, in plain words. Dumps that merely lack trailing
+/// blank sectors are common and harmless; one cut through the boot program is
+/// not, and the message says which of the two this is.
+fn truncation_note<R: Read + Seek>(
+    img: &DiscImage<R>,
+    cut: &[&DiscEntry],
+    files: usize,
+    boot_name: Option<&str>,
+    boot_cut: bool,
+) -> String {
+    let missing = img.missing_sectors();
+    let mut s = format!(
+        "The image holds {} of the {} sectors its volume descriptor claims ({missing} short, {}).",
+        img.held_sectors(),
+        img.held_sectors() + missing,
+        human_bytes(missing * 2048)
+    );
+    if boot_cut {
+        s.push_str(&format!(
+            " The boot program{} itself reaches past the end of the image, so a build from it cannot work. \
+             Use a complete dump.",
+            boot_name.map(|n| format!(" ({n})")).unwrap_or_default()
+        ));
+    } else if cut.is_empty() {
+        s.push_str(
+            " No file in the disc's directory reaches into the missing part, so every file the build needs is readable.              (The descriptor can be oversized on some discs; the game reads your original image when it runs.)",
+        );
+    } else {
+        let names: Vec<&str> = cut.iter().take(3).map(|e| e.path.as_str()).collect();
+        s.push_str(&format!(
+            " {} of {files} file(s) reach into the missing part and cannot be read in full ({}{}). \
+             The boot program{} is intact, so the build can go ahead; those files will be missing when the game runs too.",
+            cut.len(),
+            names.join(", "),
+            if cut.len() > names.len() { ", …" } else { "" },
+            boot_name.map(|n| format!(" ({n})")).unwrap_or_default()
+        ));
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +377,12 @@ pub struct DiscInfo {
     /// First few executables (capped) for display.
     pub executables: Vec<ExecutableFile>,
     pub truncated: bool,
+    /// Sectors the volume descriptor claims beyond what the image holds.
+    pub missing_sectors: u64,
+    /// Files that reach into the missing part of a truncated image.
+    pub files_past_cut: usize,
+    /// The boot file itself reaches into the missing part.
+    pub boot_past_cut: bool,
     pub warnings: Vec<String>,
     /// True when the wizard can process this image: a PS2 disc with an ELF
     /// boot file ([`ingest_ps2`]) or a PS1 disc with a PS-X EXE boot file
@@ -377,6 +444,9 @@ pub fn inspect_image(path: &str) -> Result<DiscInfo, String> {
         executable_count: a.executables.len(),
         executables: a.executables.iter().take(200).cloned().collect(),
         truncated: img.is_truncated(),
+        missing_sectors: img.missing_sectors(),
+        files_past_cut: a.cut_files,
+        boot_past_cut: a.boot_cut,
         warnings: a.warnings,
         can_ingest,
     })

@@ -51,6 +51,12 @@ export interface DiscInfo {
   executable_count: number;
   executables: ExecutableFile[];
   truncated: boolean;
+  /** Sectors the volume descriptor claims beyond what the image holds. */
+  missing_sectors: number;
+  /** Files that reach into the missing part of a truncated image. */
+  files_past_cut: number;
+  /** The boot file itself reaches into the missing part. */
+  boot_past_cut: boolean;
   warnings: string[];
   can_ingest: boolean;
 }

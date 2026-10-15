@@ -146,10 +146,10 @@ pub fn ingest_ps1(
     })?;
     let boot_file = info.boot_file.clone().unwrap_or_default();
     let title = friendly_title(&file_name_stem(Path::new(image_path)), &info.display_name);
+    // `info.warnings` already says how much of a short image is missing and
+    // whether the boot program is among it; repeating a blanket "unlikely to
+    // work" would contradict builds that are fine (the boot file is intact).
     let mut warnings = info.warnings.clone();
-    if info.truncated {
-        warnings.push("The image looks truncated; a build from it is unlikely to work.".into());
-    }
 
     // ----- workspace -----------------------------------------------------------
     let src = Path::new(image_path);
