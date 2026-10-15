@@ -429,6 +429,11 @@ pub struct IngestResult {
     pub sdk_named: usize,
     pub extracted_files: usize,
     pub extracted_bytes: u64,
+    /// `"all"` or `"executables"`; packaging needs `"all"`.
+    pub extract_mode: String,
+    /// `ret0@0xADDR` bindings written to `general.stubs` (BIOS-patching SDK
+    /// routines); empty when none were detected.
+    pub stubbed: Vec<String>,
     pub recompiler: Option<RecompilerRun>,
     pub next_steps: Vec<String>,
     pub warnings: Vec<String>,
@@ -466,6 +471,34 @@ pub fn plan_extraction<R: Read + Seek>(
 ) -> Vec<DiscEntry> {
     let a = analyze(img, entries);
     plan_from_analysis(&a, entries, mode)
+}
+
+/// SDK routines that patch or scan the EE *kernel* (the BIOS) and so cannot
+/// work in a recompiled program, which has no BIOS to patch.
+///
+/// Evidence: `InitSystemCallTableAddress` walks kernel memory at `0x8008xxxx`
+/// looking for its tables. Recompiled and run unmodified, two unrelated games
+/// (a homebrew and a retail title) both spin in it forever with no GS
+/// activity, never reaching their own code. Binding it to the generic `ret0`
+/// handler let the homebrew run on to load its IOP modules. Matching is by
+/// the hash-verified SDK database name, so this never touches user code that
+/// merely looks similar.
+///
+/// Extend this list only with a routine that was observed to stall a game and
+/// whose stubbing was shown to help.
+pub const KERNEL_PATCH_ROUTINES: &[&str] = &["InitSystemCallTableAddress"];
+
+/// `ret0@0xADDR` bindings for every detected routine in
+/// [`KERNEL_PATCH_ROUTINES`].
+pub fn kernel_stub_bindings(funcs: &[engine::FunctionEntry]) -> Vec<String> {
+    let mut v: Vec<String> = funcs
+        .iter()
+        .filter(|f| KERNEL_PATCH_ROUTINES.contains(&f.name.as_str()))
+        .map(|f| format!("ret0@0x{:x}", f.start))
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
 /// Minimum gap between two progress callbacks within one stage.
@@ -657,7 +690,8 @@ pub fn ingest_ps2(
     let sdk_named = untracked.len();
 
     let path_str = |p: &Path| p.to_string_lossy().to_string();
-    let toml = engine::build_config_toml(
+    let stubbed = kernel_stub_bindings(&funcs);
+    let toml = engine::build_config_toml_with_stubs(
         &path_str(&elf_path),
         &path_str(&gen_dir),
         &path_str(&csv_path),
@@ -667,6 +701,7 @@ pub fn ingest_ps2(
         heuristic,
         sdk_named,
         &untracked,
+        &stubbed,
     );
     let config_path = recomp_dir.join("config.toml");
     fs::write(&config_path, toml)
@@ -732,6 +767,7 @@ pub fn ingest_ps2(
             "output_dir": path_str(&gen_dir),
             "function_count": funcs.len(),
             "sdk_named": sdk_named,
+            "stubs": stubbed,
         },
         "next_steps": next_steps,
         "warnings": warnings,
@@ -759,6 +795,8 @@ pub fn ingest_ps2(
         sdk_named,
         extracted_files: summary.files.len(),
         extracted_bytes: summary.bytes,
+        extract_mode: match opts.mode { ExtractMode::All => "all", ExtractMode::Executables => "executables" }.to_string(),
+        stubbed,
         recompiler: recompiler_run,
         next_steps,
         warnings,

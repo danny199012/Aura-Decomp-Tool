@@ -83,6 +83,10 @@ export interface IngestResult {
   sdk_named: number;
   extracted_files: number;
   extracted_bytes: number;
+  /** "all" or "executables" — packaging a game needs "all". */
+  extract_mode: 'all' | 'executables' | string;
+  /** `ret0@0xADDR` bindings written to the config's `stubs` (BIOS-patching SDK routines). */
+  stubbed: string[];
   recompiler: RecompilerRun | null;
   next_steps: string[];
   warnings: string[];
@@ -140,4 +144,62 @@ export async function onFileDrop(cb: (paths: string[]) => void): Promise<Unliste
   return getCurrentWebview().onDragDropEvent((e) => {
     if (e.payload.type === 'drop') cb(e.payload.paths);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Packaging: workspace + built runtime exe -> double-clickable game folder
+// ---------------------------------------------------------------------------
+
+export interface PackageResult {
+  package_dir: string;
+  game_exe: string;
+  /** The file to double-click (aura-launch .exe when available, else a .cmd). */
+  launcher: string;
+  launcher_kind: 'exe' | 'cmd';
+  cmd_launcher: string | null;
+  boot_elf: string;
+  disc_files: number;
+  disc_bytes: number;
+  disc_method: 'hardlink' | 'copy' | 'mixed' | 'in-place';
+  dlls: string[];
+  complete: boolean;
+  extract_mode: string;
+  display_name: string;
+  serial: string | null;
+  warnings: string[];
+}
+
+export interface PackageProgress {
+  files_done: number;
+  files_total: number;
+  bytes_done: number;
+  bytes_total: number;
+  current: string;
+}
+
+export const packageGame = (workspace: string, exe: string, outDir: string | null, copy: boolean) =>
+  call<PackageResult>('package_ps2_game', { workspace, exe, outDir, copy });
+
+export async function pickRuntimeExe(): Promise<string | null> {
+  try {
+    return await call<string | null>('pick_runtime_exe', {});
+  } catch {
+    return null;
+  }
+}
+
+export async function findAuraLauncher(): Promise<string | null> {
+  try {
+    return await call<string | null>('find_aura_launcher', {});
+  } catch {
+    return null;
+  }
+}
+
+export const playPackagedGame = (launcher: string) => call<void>('play_packaged_game', { launcher });
+
+/** Subscribe to `package-progress` events. Returns an unsubscribe function. */
+export async function onPackageProgress(cb: (p: PackageProgress) => void): Promise<UnlistenFn> {
+  if (!isBackendAvailable()) return () => {};
+  return listen<PackageProgress>('package-progress', (e) => cb(e.payload));
 }

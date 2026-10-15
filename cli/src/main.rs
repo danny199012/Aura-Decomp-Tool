@@ -35,6 +35,12 @@ struct Args {
     all: bool,
     /// `--recompiler PATH`: a `ps2_recomp` binary to run after ingest.
     recompiler: Option<String>,
+    /// `--exe PATH`: the built runtime executable (ps2-package).
+    exe: Option<String>,
+    /// `--launcher PATH`: the aura-launch binary to copy in (ps2-package).
+    launcher: Option<String>,
+    /// `--copy`: copy the disc tree instead of hard-linking it (ps2-package).
+    copy: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -47,6 +53,9 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "-V" | "--version" => a.version = true,
             "--json" => a.json = true,
             "--all" => a.all = true,
+            "--copy" => a.copy = true,
+            "--exe" => { a.exe = Some(argv.get(i + 1).cloned().ok_or("--exe needs a value (path to the built runtime)")?); i += 1; }
+            "--launcher" => { a.launcher = Some(argv.get(i + 1).cloned().ok_or("--launcher needs a value (path to aura-launch)")?); i += 1; }
             "--recompiler" => { a.recompiler = Some(argv.get(i + 1).cloned().ok_or("--recompiler needs a value (path to ps2_recomp)")?); i += 1; }
             "--section" => { a.section = Some(argv.get(i + 1).cloned().ok_or("--section needs a value")?); i += 1; }
             "--at" => { a.at = Some(argv.get(i + 1).cloned().ok_or("--at needs a value (hex address)")?); i += 1; }
@@ -1016,6 +1025,44 @@ fn cmd_ps2_ingest(a: &Args) -> Result<String, String> {
     Ok(t)
 }
 
+fn cmd_ps2_package(a: &Args) -> Result<String, String> {
+    let ws = a.file.as_ref().ok_or("ps2-package needs a workspace folder (the one `ps2-ingest` wrote)")?;
+    let exe = a.exe.as_ref().ok_or("ps2-package needs --exe PATH (the runtime executable you built)")?;
+    let opts = ps2_package::PackageOptions {
+        out_dir: a.out.as_ref().map(std::path::PathBuf::from),
+        prefer_links: !a.copy,
+        launcher_exe: a.launcher.as_ref().map(std::path::PathBuf::from),
+        extra_files: vec![],
+    };
+    let mut last_pct = 101u64;
+    let r = ps2_package::package_game(std::path::Path::new(ws), std::path::Path::new(exe), &opts, &mut |p| {
+        if !a.json && p.bytes_total > 0 {
+            let pct = p.bytes_done * 100 / p.bytes_total;
+            if pct != last_pct && pct % 10 == 0 { last_pct = pct; eprintln!("  {pct:>3}%  {}", p.current); }
+        }
+        true
+    })?;
+    if a.json { return Ok(serde_json::to_string_pretty(&r).unwrap_or_default()); }
+    let mut t = String::new();
+    t.push_str(&format!("{} [{}]
+", r.display_name, r.serial.clone().unwrap_or_else(|| "no serial".into())));
+    t.push_str(&format!("Package:      {}
+", r.package_dir));
+    t.push_str(&format!("Launcher:     {} ({})
+", r.launcher, r.launcher_kind));
+    t.push_str(&format!("Boot file:    {}
+", r.boot_elf));
+    t.push_str(&format!("Disc tree:    {} files, {} ({})
+", r.disc_files, fmt_size(r.disc_bytes), r.disc_method));
+    if !r.dlls.is_empty() { t.push_str(&format!("DLLs:         {}
+", r.dlls.join(", "))); }
+    t.push_str(&format!("Can run:      {}
+", if r.complete { "yes — full disc present" } else { "NO — only executables were extracted" }));
+    for w in &r.warnings { t.push_str(&format!("warning: {w}
+")); }
+    Ok(t)
+}
+
 // ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
@@ -1054,6 +1101,7 @@ fn run(argv: &[String]) -> Result<i32, String> {
         // rather than letting `emit` try to overwrite the directory.
         "disc-extract" => cmd_disc_extract(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-ingest" => cmd_ps2_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "ps2-package" => cmd_ps2_package(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         cmd => Err(format!("Unknown command: {cmd}. Try --help")),
     }
 }

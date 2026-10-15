@@ -5,18 +5,25 @@ import { isBackendAvailable, pickOutputFolder } from '../lib/tauri';
 import { fmtBytes } from '../lib/format';
 import {
   cancelPs2Ingest,
+  findAuraLauncher,
   findRecompiler,
   inspectDisc,
   onFileDrop,
   onIngestProgress,
+  onPackageProgress,
+  packageGame,
   pickDiscImage,
   pickRecompiler,
+  pickRuntimeExe,
+  playPackagedGame,
   revealInFileManager,
   runPs2Ingest,
   type DiscInfo,
   type ExtractMode,
   type IngestProgress,
   type IngestResult,
+  type PackageProgress,
+  type PackageResult,
 } from '../lib/ingest';
 import type { ViewId } from './Sidebar';
 
@@ -31,6 +38,7 @@ const STEPS: { id: Step; label: string }[] = [
 
 const PREF_OUT = 'aura-wizard-out';
 const PREF_RECOMP = 'aura-wizard-recompiler';
+const PREF_EXE = 'aura-wizard-runtime-exe';
 
 /** localStorage that never throws (private windows, blocked storage). */
 function readPref(key: string): string {
@@ -102,6 +110,15 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
 
+  // Packaging (done step): turn the workspace + a built runtime into a game folder.
+  const [exePath, setExePath] = useState(() => readPref(PREF_EXE));
+  const [copyFiles, setCopyFiles] = useState(false);
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgProgress, setPkgProgress] = useState<PackageProgress | null>(null);
+  const [pkgResult, setPkgResult] = useState<PackageResult | null>(null);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+  const [launcherFound, setLauncherFound] = useState<string | null>(null);
+
   // Drop handler must see the latest step without re-subscribing.
   const stepRef = useRef<Step>(step);
   stepRef.current = step;
@@ -133,6 +150,11 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
       if (disposed) u();
       else offProgress = u;
     });
+    let offPkg: (() => void) | undefined;
+    void onPackageProgress((p) => setPkgProgress(p)).then((u) => {
+      if (disposed) u();
+      else offPkg = u;
+    });
     void onFileDrop((paths) => {
       if (stepRef.current !== 'pick' && stepRef.current !== 'review') return;
       const hit = paths.find((p) => DISC_EXT.test(p)) ?? paths[0];
@@ -145,8 +167,13 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
       disposed = true;
       offProgress?.();
       offDrop?.();
+      offPkg?.();
     };
   }, [inspect]);
+
+  useEffect(() => {
+    void findAuraLauncher().then(setLauncherFound);
+  }, []);
 
   useEffect(() => {
     void findRecompiler().then((p) => {
@@ -213,6 +240,52 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
     setProgress(null);
     setError(null);
     setPath('');
+    setPkgResult(null);
+    setPkgProgress(null);
+    setPkgError(null);
+  };
+
+  const browseExe = async () => {
+    const p = await pickRuntimeExe();
+    if (p) {
+      setExePath(p);
+      writePref(PREF_EXE, p);
+    }
+  };
+
+  const makePackage = async () => {
+    if (!result || !exePath) return;
+    writePref(PREF_EXE, exePath);
+    setPkgBusy(true);
+    setPkgError(null);
+    setPkgResult(null);
+    setPkgProgress(null);
+    try {
+      setPkgResult(await packageGame(result.workspace, exePath, null, copyFiles));
+    } catch (e) {
+      const m = String(e);
+      setPkgError(m.toLowerCase().includes('cancel') ? 'Cancelled.' : m);
+    } finally {
+      setPkgBusy(false);
+    }
+  };
+
+  /** Re-run the ingest for the same disc, this time copying the whole disc. */
+  const extractEverything = async () => {
+    if (!result) return;
+    setMode('all');
+    setError(null);
+    setPkgResult(null);
+    setProgress(null);
+    setCancelling(false);
+    setStep('running');
+    try {
+      setResult(await runPs2Ingest(path, outRoot, 'all', null));
+      setStep('done');
+    } catch (e) {
+      setError(String(e));
+      setStep('done');
+    }
   };
 
   const openInAura = async () => {
@@ -500,6 +573,9 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
                 <PathRow label="Function map" value={result.functions_csv} />
                 <PathRow label="Generated C++ goes to" value={result.recomp_output_dir} />
                 <PathRow label="Extracted disc files" value={result.disc_dir} />
+                {result.stubbed.length > 0 && (
+                  <PathRow label="BIOS routines stubbed" value={result.stubbed.join(', ')} />
+                )}
               </ul>
 
               <div className="flex flex-wrap gap-2">
@@ -513,6 +589,125 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
                   Another disc
                 </Button>
               </div>
+            </div>
+          </Panel>
+
+          <Panel
+            title="Make a double-click game folder"
+            actions={
+              <Chip color={result.extract_mode === 'all' ? '#10b981' : '#f59e0b'}>
+                {result.extract_mode === 'all' ? 'full disc extracted' : 'executables only'}
+              </Chip>
+            }
+          >
+            <div className="space-y-3">
+              <p className="text-sm text-fg-secondary">
+                Once you have built the game runtime (the executable compiled from the files in{' '}
+                <Kbd>recomp/generated</Kbd> plus upstream&apos;s runtime), Aura bundles it with the extracted disc and a
+                launcher, so the game starts with a double-click instead of a command line.
+              </p>
+
+              {result.extract_mode !== 'all' && (
+                <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  <div>
+                    Only the executables were extracted. The runtime reads the game&apos;s files from the extracted
+                    disc, so a real game cannot run without the rest of it.
+                  </div>
+                  <Button variant="ghost" onClick={() => void extractEverything()} disabled={pkgBusy}>
+                    Extract the entire disc now
+                  </Button>
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <input
+                  className="flex-1 rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
+                  placeholder="Path to the runtime exe you built (e.g. ps2EntryRunner.exe)"
+                  value={exePath}
+                  onChange={(e) => setExePath(e.target.value)}
+                />
+                <Button variant="ghost" onClick={() => void browseExe()} disabled={pkgBusy}>
+                  Browse…
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-xs text-fg-muted">
+                  <input type="checkbox" checked={copyFiles} onChange={(e) => setCopyFiles(e.target.checked)} />
+                  Copy the disc files instead of linking them (uses more disk space)
+                </label>
+                <Button variant="primary" onClick={() => void makePackage()} disabled={pkgBusy || !exePath}>
+                  {pkgBusy ? 'Packaging…' : 'Create game folder'}
+                </Button>
+              </div>
+              {!exePath && <Hint>Choose the built executable first. Aura copies it; it does not modify it.</Hint>}
+              <Hint>
+                {launcherFound
+                  ? 'Launcher program found: the folder gets a Play <game>.exe that opens without a console window.'
+                  : 'Launcher program (aura-launch) not found next to Aura, so the folder gets a Play .cmd instead, which briefly shows a console window. Build it with `cargo build --release` in the cli folder.'}
+              </Hint>
+
+              {pkgBusy && pkgProgress && pkgProgress.bytes_total > 0 && (
+                <div className="space-y-1">
+                  <div className="h-2 overflow-hidden rounded-full bg-app-panel-soft">
+                    <div
+                      className="h-full rounded-full bg-accent transition-all"
+                      style={{ width: `${Math.round((pkgProgress.bytes_done / pkgProgress.bytes_total) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="font-mono text-xs text-fg-muted">
+                    {pkgProgress.files_done}/{pkgProgress.files_total} files · {fmtBytes(pkgProgress.bytes_done)} /{' '}
+                    {fmtBytes(pkgProgress.bytes_total)}
+                  </div>
+                </div>
+              )}
+              {pkgBusy && <Spinner label="Assembling the game folder…" />}
+              {pkgError && <ErrorBox message={pkgError} />}
+
+              {pkgResult && (
+                <div className="space-y-3 border-t border-app-border pt-3">
+                  <StatGrid>
+                    <Stat label="Disc files" value={pkgResult.disc_files.toLocaleString()} />
+                    <Stat label="Disc data" value={fmtBytes(pkgResult.disc_bytes)} />
+                    <Stat
+                      label="Disc tree"
+                      value={pkgResult.disc_method === 'hardlink' ? 'linked (no extra space)' : pkgResult.disc_method}
+                    />
+                    <Stat label="Launcher" value={pkgResult.launcher_kind === 'exe' ? '.exe' : '.cmd'} />
+                  </StatGrid>
+                  <ul className="text-xs">
+                    <PathRow label="Game folder" value={pkgResult.package_dir} />
+                    <PathRow label="Double-click this" value={pkgResult.launcher} />
+                    <PathRow label="Boot file" value={pkgResult.boot_elf} />
+                    {pkgResult.dlls.length > 0 && <PathRow label="DLLs bundled" value={pkgResult.dlls.join(', ')} />}
+                  </ul>
+                  {!pkgResult.complete && (
+                    <ErrorBox message="This folder has no game data (executables only), so it cannot run a real game." />
+                  )}
+                  {pkgResult.warnings.map((w) => (
+                    <div
+                      key={w}
+                      className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+                    >
+                      {w}
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="primary"
+                      onClick={() => void playPackagedGame(pkgResult.launcher).catch((e) => setPkgError(String(e)))}
+                    >
+                      Play
+                    </Button>
+                    <Button variant="ghost" onClick={() => void revealInFileManager(pkgResult.package_dir)}>
+                      Show game folder
+                    </Button>
+                  </div>
+                  <Hint>
+                    This folder contains code translated from the game plus the game&apos;s own data. It is for this
+                    computer only — do not share or upload it.
+                  </Hint>
+                </div>
+              )}
             </div>
           </Panel>
 

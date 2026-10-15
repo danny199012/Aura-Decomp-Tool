@@ -25,3 +25,9 @@ path = "src/lib.rs"
 name = "aura-cli"
 path = "src/main.rs"
 
+# Tiny double-click launcher copied into packaged game folders. It includes
+# only `launcher_core.rs` (not the analysis library), so it stays small.
+[[bin]]
+name = "aura-launch"
+path = "src/launch.rs"
+

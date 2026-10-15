@@ -46,8 +46,12 @@ pub use engine::*;
 #[path = "../../src-tauri/src/nid_db.rs"] pub mod nid_db;
 #[path = "../../src-tauri/src/disc.rs"] pub mod disc;
 #[path = "../../src-tauri/src/ps2_ingest.rs"] pub mod ps2_ingest;
+#[path = "../../src-tauri/src/launcher_core.rs"] pub mod launcher_core;
+#[path = "../../src-tauri/src/ps2_package.rs"] pub mod ps2_package;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_disc;
+#[cfg(test)]
+mod tests_package;

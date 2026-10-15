@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // Synthetic ISO9660 writer
 // ---------------------------------------------------------------------------
 
-enum Node {
+pub(crate) enum Node {
     File(Vec<u8>),
     /// One logical file stored as several extents (ISO9660 multi-extent).
     Multi(Vec<Vec<u8>>),
@@ -144,7 +144,7 @@ fn padded(s: &str, n: usize) -> Vec<u8> {
 }
 
 /// Build a cooked (2048-byte-sector) ISO9660 image.
-fn build_iso(volume_id: &str, root: &[(String, Node)]) -> Vec<u8> {
+pub(crate) fn build_iso(volume_id: &str, root: &[(String, Node)]) -> Vec<u8> {
     let root_lba = 18u32;
     let root_size = dir_size(root);
     let mut alloc = root_lba + root_size / 2048;
@@ -235,7 +235,7 @@ fn mips_text() -> Vec<u8> {
 
 /// An ELF32 little-endian MIPS executable. `with_sections=false` produces the
 /// retail-style layout (program headers only, `e_shnum == 0`).
-fn ps2_elf(with_sections: bool) -> Vec<u8> {
+pub(crate) fn ps2_elf(with_sections: bool) -> Vec<u8> {
     let text = mips_text();
     let text_off = 0x100usize;
     let mut buf = vec![0u8; text_off];
@@ -299,13 +299,13 @@ fn irx() -> Vec<u8> {
     b
 }
 
-fn ps2_disc(with_sections: bool) -> Vec<u8> {
+pub(crate) fn ps2_disc(with_sections: bool) -> Vec<u8> {
     ps2_disc_with_filler(with_sections, 0)
 }
 
 /// Like [`ps2_disc`] plus `filler` small asset files spread over many
 /// directories — a disc shaped like a real game, which has thousands of files.
-fn ps2_disc_with_filler(with_sections: bool, filler: usize) -> Vec<u8> {
+pub(crate) fn ps2_disc_with_filler(with_sections: bool, filler: usize) -> Vec<u8> {
     let mut assets: Vec<(String, Node)> = Vec::new();
     for d in 0..filler.div_ceil(200) {
         let mut kids = Vec::new();
@@ -340,10 +340,10 @@ fn ps2_disc_with_filler(with_sections: bool, filler: usize) -> Vec<u8> {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-struct TempDir(PathBuf);
+pub(crate) struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         let p = std::env::temp_dir().join(format!(
             "aura-disc-test-{tag}-{}-{}",
             std::process::id(),
@@ -352,7 +352,7 @@ impl TempDir {
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
     }
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -766,6 +766,225 @@ mod elf_fallback_tests {
         assert!(starts.contains(&TEXT_ADDR), "entry point: {starts:x?}");
         assert!(starts.contains(&(TEXT_ADDR + 0x20)), "jal target 1: {starts:x?}");
         assert!(starts.contains(&(TEXT_ADDR + 0x30)), "jal target 2: {starts:x?}");
+    }
+}
+
+// ===========================================================================
+// ps2_ingest.rs / engine.rs — BIOS-patching routines are bound to ret0
+// ===========================================================================
+
+mod stub_binding_tests {
+    use super::*;
+    use crate::engine::FunctionEntry;
+
+    fn fe(name: &str, start: u32) -> FunctionEntry {
+        FunctionEntry { name: name.to_string(), start, end: start + 0x100, size: 0x100 }
+    }
+
+    #[test]
+    fn only_listed_kernel_patch_routines_are_bound() {
+        let funcs = vec![
+            fe("InitSystemCallTableAddress", 0x0012_C770),
+            fe("printf", 0x0010_0000),
+            fe("sub_00100100", 0x0010_0100),
+            fe("InitTLB", 0x0010_0200), // known to upstream already; not ours to bind
+        ];
+        assert_eq!(ps2_ingest::kernel_stub_bindings(&funcs), vec!["ret0@0x12c770".to_string()]);
+    }
+
+    #[test]
+    fn nothing_is_bound_when_no_such_routine_exists() {
+        let funcs = vec![fe("printf", 0x0010_0000), fe("sub_00100100", 0x0010_0100)];
+        assert!(ps2_ingest::kernel_stub_bindings(&funcs).is_empty());
+    }
+
+    #[test]
+    fn duplicate_matches_are_bound_once_per_address() {
+        let funcs = vec![fe("InitSystemCallTableAddress", 0x360140), fe("InitSystemCallTableAddress", 0x360140)];
+        assert_eq!(ps2_ingest::kernel_stub_bindings(&funcs), vec!["ret0@0x360140".to_string()]);
+    }
+
+    fn config_for(stubs: &[String]) -> String {
+        let info = engine::parse_elf_data(&ps2_elf(false), "g.elf").unwrap();
+        let funcs = engine::detect_functions_inner(&info).unwrap();
+        engine::build_config_toml_with_stubs("g.elf", "out", "f.csv", &info, &funcs, 0, 0, 0, &[], stubs)
+    }
+
+    #[test]
+    fn config_writes_stub_bindings_as_a_toml_array() {
+        let cfg = config_for(&["ret0@0x12c770".to_string(), "ret0@0x360140".to_string()]);
+        assert!(cfg.contains("stubs = [\n    \"ret0@0x12c770\",\n    \"ret0@0x360140\",\n]\n"), "{cfg}");
+        assert!(!cfg.contains("
+stubs = []"), "{cfg}");
+    }
+
+    #[test]
+    fn config_without_stubs_keeps_the_empty_array_and_the_old_signature_still_works() {
+        assert!(config_for(&[]).contains("stubs = []\n"));
+        let info = engine::parse_elf_data(&ps2_elf(false), "g.elf").unwrap();
+        let funcs = engine::detect_functions_inner(&info).unwrap();
+        let legacy = engine::build_config_toml("g.elf", "out", "f.csv", &info, &funcs, 0, 0, 0, &[]);
+        assert!(legacy.contains("stubs = []\n"));
+    }
+
+    #[test]
+    fn generated_comments_describe_untracked_stubs_correctly() {
+        let cfg = config_for(&[]);
+        assert!(!cfg.contains("ignored by the recompiler"), "stale claim: {cfg}");
+        assert!(cfg.contains("entry-point hints"), "{cfg}");
+        assert!(cfg.contains("ps2_recomp config.toml"), "{cfg}");
+    }
+}
+
+// ===========================================================================
+// engine.rs — functions reachable only through pointers (ctors, vtables)
+// ===========================================================================
+
+mod pointer_scan_tests {
+    use super::*;
+
+    /// ELF32-LE MIPS with a code segment at 0x100000 and a data segment at
+    /// 0x200000 holding `data_words`.
+    fn elf_with_data(code: &[u32], data_words: &[u32]) -> Vec<u8> {
+        let code: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data: Vec<u8> = data_words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let (code_off, data_off) = (0x100usize, 0x100 + ((code.len() + 15) & !15));
+        let mut b = vec![0u8; data_off + data.len()];
+        b[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        b[4] = 1;
+        b[5] = 1;
+        b[6] = 1;
+        b[16..18].copy_from_slice(&2u16.to_le_bytes());
+        b[18..20].copy_from_slice(&8u16.to_le_bytes());
+        b[24..28].copy_from_slice(&0x0010_0000u32.to_le_bytes()); // entry
+        b[28..32].copy_from_slice(&52u32.to_le_bytes());
+        b[40..42].copy_from_slice(&52u16.to_le_bytes());
+        b[42..44].copy_from_slice(&32u16.to_le_bytes());
+        b[44..46].copy_from_slice(&2u16.to_le_bytes());
+        let mut ph = |i: usize, off: usize, va: u32, sz: usize, flags: u32| {
+            let o = 52 + i * 32;
+            b[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
+            b[o + 4..o + 8].copy_from_slice(&(off as u32).to_le_bytes());
+            b[o + 8..o + 12].copy_from_slice(&va.to_le_bytes());
+            b[o + 12..o + 16].copy_from_slice(&va.to_le_bytes());
+            b[o + 16..o + 20].copy_from_slice(&(sz as u32).to_le_bytes());
+            b[o + 20..o + 24].copy_from_slice(&(sz as u32).to_le_bytes());
+            b[o + 24..o + 28].copy_from_slice(&flags.to_le_bytes());
+            b[o + 28..o + 32].copy_from_slice(&16u32.to_le_bytes());
+        };
+        ph(0, code_off, 0x0010_0000, code.len(), 5); // R+X
+        ph(1, data_off, 0x0020_0000, data.len(), 6); // R+W
+        b[code_off..code_off + code.len()].copy_from_slice(&code);
+        b[data_off..data_off + data.len()].copy_from_slice(&data);
+        b
+    }
+
+    const PROLOGUE_16: u32 = 0x27BD_FFF0; // addiu sp,sp,-16
+    const PROLOGUE_32: u32 = 0x27BD_FFE0; // addiu sp,sp,-32
+    const JR_RA: u32 = 0x03E0_0008;
+    const NOP: u32 = 0;
+
+    fn starts_of(elf: &[u8]) -> Vec<u32> {
+        let info = engine::parse_elf_data(elf, "t.elf").unwrap();
+        let f = engine::detect_functions_in_sections(&info.sections, info.entry_point, info.is_little_endian);
+        f.iter().map(|f| f.start).collect()
+    }
+
+    fn code() -> Vec<u32> {
+        vec![
+            PROLOGUE_16, JR_RA, NOP, NOP,          // 0x100000: A (entry), never calls B
+            PROLOGUE_32, 0x2402_0001, JR_RA, 0x27BD_0020, // 0x100010: B; 0x100014 is mid-function
+            NOP, NOP, NOP, NOP,
+        ]
+    }
+
+    #[test]
+    fn function_reached_only_through_a_data_pointer_is_discovered() {
+        // data: [ &B, &mid-B, &data, &A ]
+        let elf = elf_with_data(&code(), &[0x0010_0010, 0x0010_0014, 0x0020_0000, 0x0010_0000]);
+        let s = starts_of(&elf);
+        assert!(s.contains(&0x0010_0000), "entry point: {s:x?}");
+        assert!(s.contains(&0x0010_0010), "ctor/vtable target with a prologue must be found: {s:x?}");
+    }
+
+    #[test]
+    fn pointers_to_mid_function_code_and_to_data_are_ignored() {
+        let elf = elf_with_data(&code(), &[0x0010_0010, 0x0010_0014, 0x0020_0000, 0x0010_0000]);
+        let s = starts_of(&elf);
+        assert!(!s.contains(&0x0010_0014), "a jump-table-style label inside a function is not a function: {s:x?}");
+        assert!(!s.contains(&0x0020_0000), "a pointer into data is not a function: {s:x?}");
+        assert_eq!(s.len(), 2, "{s:x?}");
+    }
+
+    /// Code for the thunk cases: function A (prologue), then a frameless thunk
+    /// at 0x100010 that sets arguments and tail-calls, directly after A's
+    /// `jr ra` + delay slot. A pointer-only reference must find the thunk.
+    fn code_with_thunk() -> Vec<u32> {
+        vec![
+            PROLOGUE_16, JR_RA, NOP, NOP,                 // 0x100000: A ... jr ra @0x100004, delay @0x100008
+            0x3C04_0039, 0x3C05_003F, 0x2484_3E10, 0x0804_3374, // 0x100010: thunk: lui,lui,addiu,j
+            NOP, NOP, NOP, NOP,
+        ]
+    }
+
+    #[test]
+    fn frameless_thunk_after_a_return_is_found_through_a_pointer() {
+        // Layout: 0x100008 `jr ra`, 0x10000C its delay slot, 0x100010 the
+        // thunk. Nothing calls the thunk; only a data word points at it.
+        let mut c = code_with_thunk();
+        c[1] = NOP;
+        c[2] = JR_RA;
+        c[3] = NOP;
+        let elf = elf_with_data(&c, &[0x0010_0010]);
+        let s = starts_of(&elf);
+        assert!(s.contains(&0x0010_0010), "callback-table thunk must be discovered: {s:x?}");
+    }
+
+    #[test]
+    fn a_pointer_to_unrelated_non_prologue_code_without_a_preceding_return_is_ignored() {
+        // Same thunk bytes, but the preceding instructions are plain code, so
+        // nothing says a function starts there.
+        let mut c = code_with_thunk();
+        c[1] = 0x2402_0001; // addiu v0,zero,1
+        c[2] = 0x2403_0002; // addiu v1,zero,2
+        c[3] = 0x2404_0003;
+        let elf = elf_with_data(&c, &[0x0010_0010]);
+        let s = starts_of(&elf);
+        assert!(!s.contains(&0x0010_0010), "{s:x?}");
+    }
+
+    #[test]
+    fn unaligned_values_and_values_outside_the_image_are_ignored() {
+        let elf = elf_with_data(&code(), &[0x0010_0011, 0x0010_0012, 0x0030_0000, 0xFFFF_FFFC, 0]);
+        assert_eq!(starts_of(&elf), vec![0x0010_0000]);
+    }
+
+    #[test]
+    fn no_pointer_means_no_extra_functions() {
+        let elf = elf_with_data(&code(), &[1, 2, 3, 4]);
+        assert_eq!(starts_of(&elf), vec![0x0010_0000]);
+    }
+
+    /// The full chain: a retail-style ELF whose only link to a function is a
+    /// pointer must end up in the generated ps2_recomp function map, or the
+    /// recompiler rejects the config.
+    #[test]
+    fn pointer_only_function_reaches_the_generated_function_csv() {
+        let t = TempDir::new("ptr-csv");
+        let root = vec![
+            ("SYSTEM.CNF".to_string(), Node::File(b"BOOT2 = cdrom0:\\SLUS_203.12;1\r\n".to_vec())),
+            (
+                "SLUS_203.12".to_string(),
+                Node::File(elf_with_data(&code(), &[0x0010_0010, 0x0010_0000])),
+            ),
+        ];
+        let iso = t.path().join("g.iso");
+        std::fs::write(&iso, build_iso("PTR", &root)).unwrap();
+        let opts = IngestOptions { out_root: t.path().join("o").to_string_lossy().to_string(), mode: ExtractMode::Executables, recompiler: None };
+        let res = ps2_ingest::ingest_ps2(iso.to_str().unwrap(), &opts, &mut |_| true).unwrap();
+        let csv = std::fs::read_to_string(&res.functions_csv).unwrap();
+        assert!(csv.contains("0x00100010"), "{csv}");
+        assert_eq!(res.function_count, 2);
     }
 }
 

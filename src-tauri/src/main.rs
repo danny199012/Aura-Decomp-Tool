@@ -23,6 +23,7 @@ mod decomp;
 mod decomp_export;
 mod disc;
 mod ps2_ingest;
+mod ps2_package;
 mod project;
 mod search;
 mod lzx;
@@ -1145,6 +1146,80 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
     res.map(|_| ()).map_err(|e| format!("Could not open file manager: {e}"))
 }
 
+/// Assemble the double-clickable game folder from an ingest workspace and a
+/// runtime executable. Emits `package-progress` events; shares the busy/cancel
+/// flags with the ingest so two heavy jobs never overlap.
+#[tauri::command]
+async fn package_ps2_game(
+    app: tauri::AppHandle,
+    workspace: String,
+    exe: String,
+    out_dir: Option<String>,
+    copy: bool,
+) -> Result<ps2_package::PackageResult, String> {
+    if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("Another job is already running.".into());
+    }
+    INGEST_CANCEL.store(false, Ordering::SeqCst);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps2_package::PackageOptions {
+            out_dir: out_dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from),
+            prefer_links: !copy,
+            ..Default::default()
+        };
+        ps2_package::package_game(Path::new(&workspace), Path::new(&exe), &opts, &mut |p| {
+            let _ = app.emit("package-progress", p);
+            !INGEST_CANCEL.load(Ordering::SeqCst)
+        })
+    })
+    .await;
+    INGEST_RUNNING.store(false, Ordering::SeqCst);
+    joined.map_err(|e| format!("Package task failed: {e}"))?
+}
+
+/// Native picker for the built runtime executable. `None` if cancelled.
+#[tauri::command]
+async fn pick_runtime_exe(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dlg = app.dialog().file().set_parent(&window);
+        if cfg!(windows) {
+            dlg = dlg.add_filter("Programs", &["exe"]);
+        }
+        dlg.add_filter("All Files", &["*"])
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| format!("Dialog task failed: {e}"))
+}
+
+/// Where the `aura-launch` program was found (None = packages fall back to .cmd).
+#[tauri::command]
+fn find_aura_launcher() -> Option<String> {
+    ps2_package::find_launcher(None).map(|p| p.to_string_lossy().to_string())
+}
+
+/// Start a packaged game by running its launcher. Only a file that sits in a
+/// folder containing `launch.json` (i.e. one Aura packaged) is accepted, so the
+/// webview cannot use this to run arbitrary programs.
+#[tauri::command]
+fn play_packaged_game(launcher: String) -> Result<(), String> {
+    let p = Path::new(&launcher);
+    let dir = p.parent().ok_or("Invalid launcher path")?;
+    let ext_ok = p
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("cmd"))
+        .unwrap_or(false);
+    if !p.is_file() || !ext_ok || !dir.join("launch.json").is_file() {
+        return Err("That is not an Aura game package launcher.".into());
+    }
+    std::process::Command::new(p)
+        .current_dir(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not start the game: {e}"))
+}
+
 #[tokio::main]
 async fn main() {
     tauri::Builder::default()
@@ -1207,6 +1282,10 @@ async fn main() {
             pick_recompiler,
             find_ps2_recompiler,
             reveal_in_file_manager,
+            package_ps2_game,
+            pick_runtime_exe,
+            find_aura_launcher,
+            play_packaged_game,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");
@@ -1805,7 +1884,12 @@ mod tests {
         // Function detection (JAL scan — binary is stripped).
         let funcs = detect_functions(path.to_string()).expect("detect_functions");
         assert!(funcs.len() > 2000, "expected >2000 functions, got {}", funcs.len());
-        assert!(funcs.len() < 3000, "function count suspiciously high: {}", funcs.len());
+        // Sanity ceiling against runaway over-detection. It was 3000 when only
+        // JAL/J targets were found; functions reachable through pointer tables
+        // (ctors, vtables) are now discovered too, which is correct: on a
+        // retail game, 99.2% of the starts the pointer scan adds were
+        // confirmed by ps2_recomp's own discovery.
+        assert!(funcs.len() < 4500, "function count suspiciously high: {}", funcs.len());
 
         // SCE SDK matcher diagnostic: how many sections are code, how many
         // raw matches come back, and how many functions got renamed.
