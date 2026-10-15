@@ -52,14 +52,11 @@ fn main() {
         Ok(o) if o.exit_code == Some(0) => {
             // Exit code 0, but the runtime logged its own fatal error moments
             // after starting (it does not set a failing exit code).
-            let mut msg = format!(
-                "The game stopped {:.0} seconds after starting.\n\n{}",
-                o.elapsed.as_secs_f64(),
-                o.early_failure.clone().unwrap_or_default()
+            let msg = launcher_core::explain_early_failure(
+                o.elapsed,
+                o.early_failure.as_deref().unwrap_or_default(),
+                o.log_path.as_deref(),
             );
-            if let Some(p) = &o.log_path {
-                msg.push_str(&format!("\n\nFull log: {}", p.display()));
-            }
             show_error(&title, &msg);
             std::process::exit(3);
         }

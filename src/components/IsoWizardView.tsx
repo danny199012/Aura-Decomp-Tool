@@ -4,20 +4,26 @@ import { useFile } from '../lib/FileContext';
 import { isBackendAvailable, pickOutputFolder } from '../lib/tauri';
 import { fmtBytes } from '../lib/format';
 import {
+  buildGame,
   cancelPs2Ingest,
   findAuraLauncher,
   findRecompiler,
   inspectDisc,
+  onBuildProgress,
   onFileDrop,
   onIngestProgress,
   onPackageProgress,
   packageGame,
+  planBuild,
   pickDiscImage,
   pickRecompiler,
   pickRuntimeExe,
   playPackagedGame,
   revealInFileManager,
   runPs2Ingest,
+  type BuildPlan,
+  type BuildProgress,
+  type BuildResult,
   type DiscInfo,
   type ExtractMode,
   type IngestProgress,
@@ -39,6 +45,9 @@ const STEPS: { id: Step; label: string }[] = [
 const PREF_OUT = 'aura-wizard-out';
 const PREF_RECOMP = 'aura-wizard-recompiler';
 const PREF_EXE = 'aura-wizard-runtime-exe';
+const PREF_CACHE = 'aura-wizard-build-cache';
+const PREF_NATIVE = 'aura-wizard-native-feel';
+const PREF_FAST = 'aura-wizard-fast-release';
 
 /** localStorage that never throws (private windows, blocked storage). */
 function readPref(key: string): string {
@@ -119,6 +128,17 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
   const [pkgError, setPkgError] = useState<string | null>(null);
   const [launcherFound, setLauncherFound] = useState<string | null>(null);
 
+  // One-click build (done step).
+  const [cacheDir, setCacheDir] = useState(() => readPref(PREF_CACHE));
+  const [nativeFeel, setNativeFeel] = useState(() => readPref(PREF_NATIVE) !== 'off');
+  const [fastRelease, setFastRelease] = useState(() => readPref(PREF_FAST) === 'on');
+  const [buildPlan, setBuildPlan] = useState<BuildPlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [buildBusy, setBuildBusy] = useState(false);
+  const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
+  const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
+
   // Drop handler must see the latest step without re-subscribing.
   const stepRef = useRef<Step>(step);
   stepRef.current = step;
@@ -150,6 +170,11 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
       if (disposed) u();
       else offProgress = u;
     });
+    let offBuild: (() => void) | undefined;
+    void onBuildProgress((p) => setBuildProgress(p)).then((u) => {
+      if (disposed) u();
+      else offBuild = u;
+    });
     let offPkg: (() => void) | undefined;
     void onPackageProgress((p) => setPkgProgress(p)).then((u) => {
       if (disposed) u();
@@ -168,8 +193,28 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
       offProgress?.();
       offDrop?.();
       offPkg?.();
+      offBuild?.();
     };
   }, [inspect]);
+
+  // Refresh the build plan whenever the finished workspace or cache folder
+  // changes (and again after a build, so cached items disappear from the list).
+  const planKey = result?.workspace ?? '';
+  const planNonce = buildResult?.exe ?? '';
+  useEffect(() => {
+    if (!planKey) {
+      setBuildPlan(null);
+      return;
+    }
+    let live = true;
+    setPlanError(null);
+    planBuild(planKey, cacheDir.trim() || null)
+      .then((p) => live && setBuildPlan(p))
+      .catch((e) => live && setPlanError(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [planKey, cacheDir, planNonce, result?.extract_mode]);
 
   useEffect(() => {
     void findAuraLauncher().then(setLauncherFound);
@@ -243,6 +288,46 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
     setPkgResult(null);
     setPkgProgress(null);
     setPkgError(null);
+    setBuildResult(null);
+    setBuildProgress(null);
+    setBuildError(null);
+    setBuildPlan(null);
+  };
+
+  const browseCache = async () => {
+    const d = await pickOutputFolder();
+    if (d) {
+      setCacheDir(d);
+      writePref(PREF_CACHE, d);
+    }
+  };
+
+  const makeBuild = async () => {
+    if (!result || !buildPlan) return;
+    writePref(PREF_CACHE, cacheDir);
+    writePref(PREF_NATIVE, nativeFeel ? 'on' : 'off');
+    writePref(PREF_FAST, fastRelease ? 'on' : 'off');
+    setBuildBusy(true);
+    setBuildError(null);
+    setBuildResult(null);
+    setBuildProgress(null);
+    setPkgResult(null);
+    try {
+      const r = await buildGame(
+        result.workspace,
+        cacheDir.trim() || null,
+        buildPlan.downloads.length > 0, // the button's label told the user what is downloaded
+        nativeFeel,
+        fastRelease,
+      );
+      setBuildResult(r);
+      if (r.package) setPkgResult(r.package);
+    } catch (e) {
+      const m = String(e);
+      setBuildError(m.toLowerCase().includes('cancel') ? 'Build cancelled. Cached downloads are kept.' : m);
+    } finally {
+      setBuildBusy(false);
+    }
   };
 
   const browseExe = async () => {
@@ -299,6 +384,12 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
   };
 
   const pct = Math.round((progress?.fraction ?? 0) * 100);
+  const fmtClock = (secs: number) => {
+    const s = Math.max(0, Math.round(secs));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  const buildPct = Math.round((buildProgress?.fraction ?? 0) * 100);
+  const estMinutes = buildPlan ? Math.max(1, Math.round(buildPlan.estimate_secs / 60)) : 0;
 
   // Why the Build button is disabled, shown next to it (never a silent dead button).
   const blocker: string | null = !outRoot
@@ -589,6 +680,202 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
                   Another disc
                 </Button>
               </div>
+            </div>
+          </Panel>
+
+          <Panel
+            title="Build the game (one click)"
+            actions={<Chip color="#f59e0b">upstream runtime is experimental</Chip>}
+          >
+            <div className="space-y-3">
+              <p className="text-sm text-fg-secondary">
+                Turns the project above into a game executable and a double-click folder: Aura fetches the tested
+                PS2Recomp source, builds the recompiler once, recompiles this game, compiles it with the runtime, and
+                packages the result. The first build is the slow one; later builds reuse the cache.
+              </p>
+
+              {planError && <ErrorBox message={planError} />}
+              {!buildPlan && !planError && <Spinner label="Checking your build tools…" />}
+
+              {buildPlan && (
+                <>
+                  <ul className="grid grid-cols-1 gap-1 text-xs sm:grid-cols-3">
+                    {[buildPlan.toolchain.cmake, buildPlan.toolchain.git, buildPlan.toolchain.compiler].map((t) => (
+                      <li
+                        key={t.name}
+                        className={`rounded-lg border px-3 py-2 ${
+                          t.found ? 'border-app-border bg-app-panel-soft' : 'border-red-500/40 bg-red-500/10'
+                        }`}
+                      >
+                        <span className={t.found ? 'text-accent-bright' : 'text-red-300'}>{t.found ? '✓' : '✗'}</span>{' '}
+                        <span className="font-medium text-fg">{t.name}</span>
+                        <div className="truncate font-mono text-[11px] text-fg-muted">{t.path ?? 'not found'}</div>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {buildPlan.toolchain.problems.map((p) => (
+                    <div key={p} className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                      {p}
+                    </div>
+                  ))}
+
+                  {result.extract_mode !== 'all' && (
+                    <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      <div>
+                        The entire disc must be extracted before building: the runtime reads the game&apos;s files from
+                        it.
+                      </div>
+                      <Button variant="ghost" onClick={() => void extractEverything()} disabled={buildBusy}>
+                        Extract the entire disc now
+                      </Button>
+                    </div>
+                  )}
+
+                  {buildPlan.downloads.length > 0 ? (
+                    <div className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      <div className="font-medium">
+                        The first build downloads about {buildPlan.download_mb.toLocaleString()} MB from GitHub:
+                      </div>
+                      <ul className="list-inside list-disc space-y-0.5">
+                        {buildPlan.downloads.map((d) => (
+                          <li key={d.what}>
+                            {d.what} <span className="text-amber-200/70">(~{d.approx_mb} MB, {d.from})</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <Hint>Everything needed is already cached: no downloads.</Hint>
+                  )}
+
+                  <StatGrid>
+                    <Stat label="Functions" value={buildPlan.functions.toLocaleString()} />
+                    <Stat label="Estimated time" value={`~${estMinutes} min (${buildPlan.cores} cores)`} />
+                    <Stat
+                      label="Disk (cache)"
+                      value={`${fmtBytes(buildPlan.free_bytes ?? 0)} free · ~${fmtBytes(buildPlan.required_bytes)} needed`}
+                    />
+                    <Stat label="Upstream commit" value={buildPlan.pinned_commit.slice(0, 8)} />
+                  </StatGrid>
+
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
+                      placeholder={buildPlan.cache_dir}
+                      value={cacheDir}
+                      onChange={(e) => setCacheDir(e.target.value)}
+                      title="Where upstream's source and the build are cached"
+                    />
+                    <Button variant="ghost" onClick={() => void browseCache()} disabled={buildBusy}>
+                      Cache folder…
+                    </Button>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-xs text-fg-muted">
+                    <input type="checkbox" checked={nativeFeel} onChange={(e) => setNativeFeel(e.target.checked)} />
+                    Hide the runtime&apos;s debug overlay, console window and very verbose logging
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-fg-muted">
+                    <input type="checkbox" checked={fastRelease} onChange={(e) => setFastRelease(e.target.checked)} />
+                    Optimise for speed (upstream&apos;s whole-program release mode: a faster game, but a longer
+                    and more memory-hungry build)
+                  </label>
+
+                  {buildPlan.blockers
+                    .filter((b) => !buildPlan.toolchain.problems.includes(b) && !b.includes('entire disc'))
+                    .map((b) => (
+                      <ErrorBox key={b} message={b} />
+                    ))}
+
+                  <div className="flex flex-wrap items-center justify-end gap-3">
+                    {buildBusy && (
+                      <Button variant="danger" onClick={() => void cancel()} disabled={cancelling}>
+                        {cancelling ? 'Stopping…' : 'Cancel build'}
+                      </Button>
+                    )}
+                    <Button
+                      variant="primary"
+                      onClick={() => void makeBuild()}
+                      disabled={buildBusy || !buildPlan.can_build || result.extract_mode !== 'all'}
+                    >
+                      {buildBusy
+                        ? 'Building…'
+                        : buildPlan.downloads.length > 0
+                          ? `Download ~${(buildPlan.download_mb / 1000).toFixed(1)} GB and build`
+                          : 'Build the game'}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {buildBusy && (
+                <div className="space-y-2">
+                  <div className="h-2.5 overflow-hidden rounded-full bg-app-panel-soft">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${buildPct}%` }} />
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="truncate text-fg-secondary">{buildProgress?.message ?? 'Starting…'}</span>
+                    <span className="ml-3 shrink-0 font-mono text-fg">
+                      {buildPct}% · {fmtClock(buildProgress?.elapsed_secs ?? 0)}
+                    </span>
+                  </div>
+                  {buildProgress && buildProgress.log_tail.length > 0 && (
+                    <pre className="max-h-40 overflow-auto rounded-lg border border-app-border bg-app-panel-soft p-2 font-mono text-[11px] text-fg-muted">
+                      {buildProgress.log_tail.join('\n')}
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              {buildError && <ErrorBox message={buildError} />}
+
+              {buildResult && (
+                <div className="space-y-3 border-t border-app-border pt-3">
+                  <StatGrid>
+                    <Stat label="Built in" value={fmtClock(buildResult.elapsed_secs)} />
+                    <Stat label="C++ files" value={buildResult.generated_sources.toLocaleString()} />
+                    <Stat label="Game folder" value={buildResult.package ? 'ready' : 'not packaged'} />
+                    <Stat label="Overlay/console" value={buildResult.native_feel ? 'hidden' : 'upstream default'} />
+                  </StatGrid>
+                  <ul className="text-xs">
+                    <PathRow label="Executable" value={buildResult.exe} />
+                    <PathRow label="Build log" value={buildResult.log_path} />
+                    {buildResult.package && <PathRow label="Double-click this" value={buildResult.package.launcher} />}
+                  </ul>
+                  <div className="flex flex-wrap gap-2">
+                    {buildResult.package && (
+                      <>
+                        <Button
+                          variant="primary"
+                          onClick={() =>
+                            void playPackagedGame(buildResult.package!.launcher).catch((e) => setBuildError(String(e)))
+                          }
+                        >
+                          Play
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void revealInFileManager(buildResult.package!.package_dir)}
+                        >
+                          Show game folder
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                  {buildResult.warnings.map((w) => (
+                    <div key={w} className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      {w}
+                    </div>
+                  ))}
+                  <Hint>
+                    A successful build means the game&apos;s code compiled and starts. The upstream runtime is
+                    experimental: expect the window to open and draw without the game being playable yet. The build
+                    log and the game folder&apos;s aura-last-run.log show how far it got.
+                  </Hint>
+                </div>
+              )}
             </div>
           </Panel>
 

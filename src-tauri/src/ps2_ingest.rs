@@ -612,7 +612,9 @@ pub fn ingest_ps2(
     let ws_name = disc::sanitize_component(serial.as_deref().unwrap_or(&stem));
 
     // ----- workspace layout ------------------------------------------------
-    let ws = Path::new(&opts.out_root).join(&ws_name);
+    // Absolute: the recompiler runs from another directory and reads the
+    // config's paths there.
+    let ws = absolute_path(Path::new(&opts.out_root)).join(&ws_name);
     let disc_dir = ws.join("disc");
     let recomp_dir = ws.join("recomp");
     let gen_dir = recomp_dir.join("generated");
@@ -920,6 +922,16 @@ fn count_files(dir: &Path, depth: usize) -> usize {
         .sum()
 }
 
+/// `p` made absolute against the current directory (no symlink resolution and,
+/// unlike `canonicalize`, no `\\?\` prefix that CMake and MSBuild dislike).
+///
+/// Child tools run in another working directory, so every path handed to one
+/// has to survive that: a relative `--out ./games` used to reach `ps2_recomp`
+/// unchanged and fail with "error opening file".
+pub fn absolute_path(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// Run `ps2_recomp <config>` in `workdir`, logging combined output to `log`.
 /// `keep_going` is polled ~10 times a second; returning `false` kills the child.
 pub fn run_recompiler(
@@ -930,6 +942,15 @@ pub fn run_recompiler(
     log: &Path,
     keep_going: &mut dyn FnMut() -> bool,
 ) -> RecompilerRun {
+    let (exe, config, workdir, output_dir, log) = (
+        absolute_path(exe),
+        absolute_path(config),
+        absolute_path(workdir),
+        absolute_path(output_dir),
+        absolute_path(log),
+    );
+    let (exe, config, workdir, output_dir, log) =
+        (exe.as_path(), config.as_path(), workdir.as_path(), output_dir.as_path(), log.as_path());
     let command = format!("\"{}\" \"{}\"", exe.display(), config.display());
     let mut run = RecompilerRun {
         executable: exe.to_string_lossy().to_string(),

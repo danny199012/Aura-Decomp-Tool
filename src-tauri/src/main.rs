@@ -24,6 +24,7 @@ mod decomp_export;
 mod disc;
 mod ps2_ingest;
 mod ps2_package;
+mod ps2_build;
 mod project;
 mod search;
 mod lzx;
@@ -1177,6 +1178,56 @@ async fn package_ps2_game(
     joined.map_err(|e| format!("Package task failed: {e}"))?
 }
 
+/// Describe a one-click build (toolchain, downloads, disk, estimate) without
+/// doing any of it. The UI shows this and asks for consent before downloading.
+#[tauri::command]
+async fn plan_ps2_build(workspace: String, cache_dir: Option<String>) -> Result<ps2_build::BuildPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps2_build::BuildOptions {
+            cache_dir: cache_dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from),
+            ..Default::default()
+        };
+        ps2_build::plan_build(Path::new(&workspace), &opts)
+    })
+    .await
+    .map_err(|e| format!("Plan task failed: {e}"))?
+}
+
+/// Run the one-click build: fetch/build upstream, recompile, compile the
+/// runtime, and package. Emits `build-progress` events; shares the busy and
+/// cancel flags with the other long jobs.
+#[tauri::command]
+async fn build_ps2_game(
+    app: tauri::AppHandle,
+    workspace: String,
+    cache_dir: Option<String>,
+    allow_downloads: bool,
+    native_feel: bool,
+    fast_release: bool,
+) -> Result<ps2_build::BuildResult, String> {
+    if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("Another job is already running.".into());
+    }
+    INGEST_CANCEL.store(false, Ordering::SeqCst);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps2_build::BuildOptions {
+            cache_dir: cache_dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from),
+            allow_downloads,
+            package: true,
+            native_feel,
+            fast_release,
+            ..Default::default()
+        };
+        ps2_build::build_game(Path::new(&workspace), &opts, &mut |p| {
+            let _ = app.emit("build-progress", p);
+            !INGEST_CANCEL.load(Ordering::SeqCst)
+        })
+    })
+    .await;
+    INGEST_RUNNING.store(false, Ordering::SeqCst);
+    joined.map_err(|e| format!("Build task failed: {e}"))?
+}
+
 /// Native picker for the built runtime executable. `None` if cancelled.
 #[tauri::command]
 async fn pick_runtime_exe(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
@@ -1283,6 +1334,8 @@ async fn main() {
             find_ps2_recompiler,
             reveal_in_file_manager,
             package_ps2_game,
+            plan_ps2_build,
+            build_ps2_game,
             pick_runtime_exe,
             find_aura_launcher,
             play_packaged_game,

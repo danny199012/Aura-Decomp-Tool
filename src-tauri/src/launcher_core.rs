@@ -80,6 +80,68 @@ pub fn find_failure_line(log: &str) -> Option<String> {
         .map(|l| l.to_string())
 }
 
+/// The function name in the runtime's "Unimplemented PS2 stub called. name=…" line.
+pub fn stub_name(line: &str) -> Option<&str> {
+    let rest = &line[line.find("name=")? + "name=".len()..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(&rest[..end]).filter(|n| !n.is_empty())
+}
+
+/// Which part of the console an SDK function belongs to, for the message only.
+fn stub_area(name: &str) -> Option<&'static str> {
+    const AREAS: &[(&str, &str)] = &[
+        ("sceSd", "sound"),
+        ("sceSSyn", "sound"),
+        ("sceAudio", "sound"),
+        ("sceCd", "disc drive"),
+        ("scePad", "controller"),
+        ("sceMc", "memory card"),
+        ("sceMpeg", "video playback"),
+        ("sceDeci2", "debug console"),
+        ("sceTty", "debug console"),
+        ("sceGs", "graphics"),
+        ("sceDma", "DMA"),
+        ("sceVif", "graphics"),
+        ("sceGif", "graphics"),
+        ("sceIpu", "video decoding"),
+    ];
+    AREAS.iter().find(|(p, _)| name.starts_with(p)).map(|(_, a)| *a)
+}
+
+/// The length of a run in words: "less than a second", "1 second", "7 seconds".
+fn describe_duration(d: Duration) -> String {
+    match d.as_secs_f64().round() as u64 {
+        0 => "less than a second".to_string(),
+        1 => "1 second".to_string(),
+        n => format!("{n} seconds"),
+    }
+}
+
+/// What to tell the user when the game stopped moments after starting and its
+/// log says why (see [`RunOutcome::early_failure`]).
+pub fn explain_early_failure(elapsed: Duration, failure: &str, log: Option<&Path>) -> String {
+    let mut msg = format!("The game stopped {} after starting.\n\n", describe_duration(elapsed));
+    if failure.to_ascii_lowercase().contains("unimplemented ps2 stub called") {
+        match stub_name(failure) {
+            Some(name) => {
+                let area = stub_area(name).map(|a| format!(" ({a})")).unwrap_or_default();
+                msg.push_str(&format!(
+                    "It called a PlayStation 2 system function that the PS2 runtime does not implement yet: {name}{area}.\n\nThat is a gap in the runtime this game was built with, not a problem with your game files."
+                ));
+            }
+            None => msg.push_str(&format!(
+                "It called a PlayStation 2 system function that the PS2 runtime does not implement yet.\n\n{failure}"
+            )),
+        }
+    } else {
+        msg.push_str(failure);
+    }
+    if let Some(p) = log {
+        msg.push_str(&format!("\n\nFull log: {}", p.display()));
+    }
+    msg
+}
+
 /// Resolve `rel` inside `dir`, refusing anything that could escape it
 /// (absolute paths, drive prefixes, `..`). `launch.json` is the user's own
 /// file, but the launcher still never follows a path outside its folder.

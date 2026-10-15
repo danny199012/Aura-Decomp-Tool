@@ -505,3 +505,62 @@ mod early_failure_tests {
         assert!(o.early_failure.is_none(), "the non-zero exit code already carries the failure");
     }
 }
+
+mod explain_tests {
+    use super::*;
+    use std::time::Duration;
+
+    // The line from a real run of the one-click-built homebrew game.
+    const REAL: &str = "Warning: Unimplemented PS2 stub called. name=sceSdTransToIOP PC=0x102d44, RA=0x102d44, Stub# guess (from $v0)=0x0";
+
+    #[test]
+    fn stub_name_is_read_from_the_runtimes_warning() {
+        assert_eq!(launcher_core::stub_name(REAL), Some("sceSdTransToIOP"));
+        assert_eq!(launcher_core::stub_name("Warning: name= PC=0x1"), None);
+        assert_eq!(launcher_core::stub_name("no such field"), None);
+        assert_eq!(launcher_core::stub_name("name=sceCdRead"), Some("sceCdRead"), "name at end of line");
+    }
+
+    #[test]
+    fn an_unimplemented_stub_is_explained_in_plain_words() {
+        let msg = launcher_core::explain_early_failure(
+            Duration::from_millis(1200),
+            REAL,
+            Some(Path::new("C:/g/aura-last-run.log")),
+        );
+        assert!(msg.starts_with("The game stopped 1 second after starting."), "{msg}");
+        assert!(msg.contains("sceSdTransToIOP (sound)"), "{msg}");
+        assert!(msg.contains("not a problem with your game files"), "{msg}");
+        assert!(!msg.contains("PC=0x") && !msg.contains("Stub# guess"), "register noise stays in the log: {msg}");
+        assert!(msg.ends_with("Full log: C:/g/aura-last-run.log"), "{msg}");
+    }
+
+    #[test]
+    fn durations_are_worded_not_pluralised_wrongly() {
+        let say = |ms| launcher_core::explain_early_failure(Duration::from_millis(ms), "Error during program execution: x", None);
+        assert!(say(200).starts_with("The game stopped less than a second after starting."));
+        assert!(say(1000).starts_with("The game stopped 1 second after"));
+        assert!(say(7400).starts_with("The game stopped 7 seconds after"));
+    }
+
+    #[test]
+    fn other_failures_quote_the_runtimes_own_line() {
+        let msg = launcher_core::explain_early_failure(
+            Duration::from_secs(3),
+            "Error during program execution: bad opcode at 0x100",
+            None,
+        );
+        assert!(msg.contains("Error during program execution: bad opcode at 0x100"), "{msg}");
+        assert!(!msg.contains("Full log"), "no log, no log line: {msg}");
+    }
+
+    #[test]
+    fn an_unrecognised_function_still_gets_the_explanation() {
+        let msg = launcher_core::explain_early_failure(
+            Duration::from_secs(2),
+            "Warning: Unimplemented PS2 stub called. name=sceFooBar PC=0x1",
+            None,
+        );
+        assert!(msg.contains("sceFooBar."), "no area in parentheses when unknown: {msg}");
+    }
+}

@@ -203,3 +203,86 @@ export async function onPackageProgress(cb: (p: PackageProgress) => void): Promi
   if (!isBackendAvailable()) return () => {};
   return listen<PackageProgress>('package-progress', (e) => cb(e.payload));
 }
+
+// ---------------------------------------------------------------------------
+// One-click build: generated C++ + upstream runtime -> exe -> game folder
+// ---------------------------------------------------------------------------
+
+export interface ToolStatus {
+  name: string;
+  found: boolean;
+  path: string | null;
+  detail: string;
+}
+
+export interface Toolchain {
+  supported_os: boolean;
+  cmake: ToolStatus;
+  git: ToolStatus;
+  compiler: ToolStatus;
+  ready: boolean;
+  problems: string[];
+}
+
+export interface DownloadItem {
+  what: string;
+  from: string;
+  approx_mb: number;
+}
+
+export interface BuildPlan {
+  toolchain: Toolchain;
+  cache_dir: string;
+  downloads: DownloadItem[];
+  download_mb: number;
+  source_cached: boolean;
+  recompiler_cached: boolean;
+  runtime_configured: boolean;
+  functions: number;
+  estimate_secs: number;
+  cores: number;
+  free_bytes: number | null;
+  required_bytes: number;
+  blockers: string[];
+  can_build: boolean;
+  pinned_commit: string;
+}
+
+export interface BuildProgress {
+  stage: string;
+  message: string;
+  fraction: number;
+  elapsed_secs: number;
+  log_tail: string[];
+}
+
+export interface BuildResult {
+  exe: string;
+  runtime_build_dir: string;
+  cache_dir: string;
+  log_path: string;
+  generated_sources: number;
+  elapsed_secs: number;
+  stage_secs: [string, number][];
+  native_feel: boolean;
+  fast_release: boolean;
+  package: PackageResult | null;
+  warnings: string[];
+}
+
+export const planBuild = (workspace: string, cacheDir: string | null) =>
+  call<BuildPlan>('plan_ps2_build', { workspace, cacheDir });
+
+export const buildGame = (
+  workspace: string,
+  cacheDir: string | null,
+  allowDownloads: boolean,
+  nativeFeel: boolean,
+  fastRelease: boolean,
+) => call<BuildResult>('build_ps2_game', { workspace, cacheDir, allowDownloads, nativeFeel, fastRelease });
+
+/** Subscribe to `build-progress` events. Returns an unsubscribe function. */
+export async function onBuildProgress(cb: (p: BuildProgress) => void): Promise<UnlistenFn> {
+  if (!isBackendAvailable()) return () => {};
+  return listen<BuildProgress>('build-progress', (e) => cb(e.payload));
+}
