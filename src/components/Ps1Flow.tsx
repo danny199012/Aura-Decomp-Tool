@@ -342,6 +342,28 @@ export default function Ps1Flow({
                   <Hint>Everything needed is already cached: no downloads.</Hint>
                 )}
 
+                {(plan.framework_patches.length > 0 || plan.config_additions.length > 0) && (
+                  <div className="space-y-1 rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 text-xs">
+                    <div className="font-medium text-fg">Fixes included in this build</div>
+                    <ul className="space-y-1">
+                      {plan.framework_patches.map((p) => (
+                        <li key={p.id}>
+                          <span className="text-fg">{p.title}</span>
+                          <span className="text-fg-muted"> — {p.why}</span>
+                        </li>
+                      ))}
+                      {plan.config_additions.map((c) => (
+                        <li key={c.setting}>
+                          <span className="text-fg">
+                            Game setting <span className="font-mono">{c.setting}</span>
+                          </span>
+                          <span className="text-fg-muted"> — {c.why}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 <StatGrid>
                   <Stat label="Estimated time" value={`~${estMinutes} min (${plan.cores} cores)`} />
                   <Stat

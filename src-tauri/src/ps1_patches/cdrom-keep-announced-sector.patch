@@ -1,0 +1,58 @@
+diff --git a/runtime/src/cdrom.c b/runtime/src/cdrom.c
+index ef040e9..db52511 100644
+--- a/runtime/src/cdrom.c
++++ b/runtime/src/cdrom.c
+@@ -1545,7 +1545,26 @@ static void advance_msf(int* m, int* s, int* f) {
+     if (*s >= 60) { *s = 0; (*m)++; }
+ }
+ 
+-static void clear_sector_buffer(void) {
++/* Drop buffered sector data.
++ *
++ * Starting a read discards the sectors still moving through the decode
++ * pipeline, but the controller's sector buffer is not part of that pipeline:
++ * the sector the last data-ready INT announced stays readable (BFRD) until a
++ * newer sector replaces it. A driver that issues the next ReadN from inside
++ * the ISR for that INT -- and only then fetches the sector it was told about --
++ * relies on this; wiping the announced slot leaves it polling DRQSTS with
++ * interrupts masked, for a sector that no longer exists. `keep_announced`
++ * preserves that one slot; a disc change passes 0 and drops everything. */
++static void clear_sector_buffer(int keep_announced) {
++    CdSectorBuf kept;
++    int have_kept = 0;
++    if (keep_announced) {
++        const CdSectorBuf *announced = &s_sector_ring[s_ring_read];
++        if (announced->size > 0) {
++            kept = *announced;
++            have_kept = 1;
++        }
++    }
+     memset(&s_data_fifo, 0, sizeof(s_data_fifo));
+     for (int i = 0; i < CDROM_NUM_SECTOR_BUFFERS; i++) {
+         s_sector_ring[i].size = 0;
+@@ -1553,6 +1572,7 @@ static void clear_sector_buffer(void) {
+     }
+     s_ring_read = 0;
+     s_ring_write = 0;
++    if (have_kept) s_sector_ring[0] = kept;
+     request_reg &= (uint8_t)~CDROM_REQUEST_BFRD;
+ }
+ 
+@@ -1628,7 +1648,7 @@ static void start_read_stream(uint8_t cmd) {
+     cdda_delay = 0;
+     cdda_data_end_pending = 0;
+     stat_reg &= (uint8_t)~CDSTAT_PLAY;
+-    clear_sector_buffer();
++    clear_sector_buffer(1);
+     /* Drive-state change cancels any pended notification (Beetle clears
+      * AIP on Play/Read/Pause/Stop/Seek alike). */
+     cdrom_clear_pending_dataready();
+@@ -3625,7 +3645,7 @@ int cdrom_disc_select(int index_1based) {
+     if (subq_replacements_active) update_last_valid_subq(0);
+ 
+     /* Buffered sectors and the seek position describe the old disc. */
+-    clear_sector_buffer();
++    clear_sector_buffer(0);
+     last_sector_lba = -1;
+     last_sector_size = 0;
+     s_setloc_lba = -1;

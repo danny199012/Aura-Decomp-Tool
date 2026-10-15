@@ -357,6 +357,30 @@ export interface Ps1BuildPlan {
   can_build: boolean;
   pinned_commit: string;
   project_dir: string;
+  /** Fixes Aura applies to the PSXRecomp framework before building. */
+  framework_patches: Ps1PatchInfo[];
+  /** Title-specific game.toml additions for this game. */
+  config_additions: Ps1ConfigAddition[];
+}
+
+export interface Ps1PatchInfo {
+  id: string;
+  title: string;
+  why: string;
+}
+
+export interface Ps1PatchOutcome {
+  id: string;
+  title: string;
+  /** "applied" or "already in the pinned framework" */
+  state: string;
+}
+
+export interface Ps1ConfigAddition {
+  serial: string;
+  /** e.g. `[runtime] overlay_native_block += 0x00010CDC` */
+  setting: string;
+  why: string;
 }
 
 export interface Ps1Package {
@@ -377,6 +401,10 @@ export interface Ps1BuildResult {
   elapsed_secs: number;
   stage_secs: [string, number][];
   package: Ps1Package | null;
+  /** Framework fixes applied (or found already present) for this build. */
+  framework_patches: Ps1PatchOutcome[];
+  /** Title-specific game.toml changes made to the project. */
+  config_additions: string[];
   warnings: string[];
 }
 
