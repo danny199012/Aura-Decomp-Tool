@@ -33,6 +33,7 @@ import {
 } from '../lib/ingest';
 import type { ViewId } from './Sidebar';
 import Ps1Flow from './Ps1Flow';
+import Ps1Options from './Ps1Options';
 
 type Step = 'pick' | 'review' | 'running' | 'done';
 
@@ -108,6 +109,8 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
   const backend = isBackendAvailable();
 
   const [step, setStep] = useState<Step>('pick');
+  const [tuneDir, setTuneDir] = useState('');
+  const [tuneOpen, setTuneOpen] = useState(false);
   const [path, setPath] = useState('');
   const [info, setInfo] = useState<DiscInfo | null>(null);
   const [mode, setMode] = useState<ExtractMode>('executables');
@@ -457,6 +460,46 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
           </div>
         </Panel>
       )}
+
+      {step === 'pick' && (
+        <Panel title="Already built a PS1 game? Tune it">
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
+                placeholder="Path to a game folder Aura built (the one with aura-package.json)"
+                value={tuneDir}
+                onChange={(e) => {
+                  setTuneDir(e.target.value);
+                  setTuneOpen(false);
+                }}
+                onKeyDown={(e) => e.key === 'Enter' && tuneDir && setTuneOpen(true)}
+              />
+              <Button
+                variant="ghost"
+                disabled={!backend}
+                onClick={async () => {
+                  const d = await pickOutputFolder();
+                  if (d) {
+                    setTuneDir(d);
+                    setTuneOpen(true);
+                  }
+                }}
+              >
+                Browse…
+              </Button>
+              <Button variant="primary" disabled={!tuneDir || !backend} onClick={() => setTuneOpen(true)}>
+                Open
+              </Button>
+            </div>
+            <Hint>
+              Change the renderer and resolution, switch enhancements off, see why a game freezes, or reset what it
+              generated. Settings files are backed up before they change.
+            </Hint>
+          </div>
+        </Panel>
+      )}
+      {step === 'pick' && tuneOpen && tuneDir && <Ps1Options packageDir={tuneDir} />}
 
       {/* ---------------------------------------------------------------- 2 */}
       {step === 'review' && info && info.platform === 'PS1' && (

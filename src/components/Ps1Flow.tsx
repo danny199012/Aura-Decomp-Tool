@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Chip, ErrorBox, Hint, Kbd, Panel, Spinner, Stat, StatGrid } from './ui';
 import { pickOutputFolder } from '../lib/tauri';
+import Ps1Options from './Ps1Options';
 import { fmtBytes } from '../lib/format';
 import {
   buildPs1Game,
@@ -95,6 +96,7 @@ export default function Ps1Flow({
   const [buildResult, setBuildResult] = useState<Ps1BuildResult | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [tuneOpen, setTuneOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -437,6 +439,9 @@ export default function Ps1Flow({
                       <Button variant="ghost" onClick={() => void revealInFileManager(buildResult.package!.package_dir)}>
                         Show game folder
                       </Button>
+                      <Button variant="ghost" onClick={() => setTuneOpen((o) => !o)}>
+                        {tuneOpen ? 'Hide game options' : 'Game options…'}
+                      </Button>
                     </>
                   )}
                 </div>
@@ -455,6 +460,7 @@ export default function Ps1Flow({
           </div>
         </Panel>
       )}
+      {buildResult?.package && tuneOpen && <Ps1Options packageDir={buildResult.package.package_dir} />}
     </>
   );
 }

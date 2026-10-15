@@ -214,6 +214,23 @@ Point the wizard (or `aura-cli ps1-ingest` / `ps1-build`) at a PS1 disc image an
 - **Licence note** — PSXRecomp is PolyForm Noncommercial 1.0.0. Aura fetches it at your request and never bundles it. The generated program contains code translated from your disc: keep it to yourself.
 - **Also relevant: PsyCross** ([OpenDriver2](https://github.com/OpenDriver2/PsyCross), MIT; [SlickAmogus fork](https://github.com/SlickAmogus/PsyCross) tuned for Silent Hill) reimplements the PSY-Q SDK so a game's *decompiled source* can be built for PC. It is not part of this disc-to-exe pipeline, which has no source; it would suit a future "build a matching decompilation" backend.
 
+### Tune a built PS1 game
+`aura-cli ps1-options <game folder>` (and the **Game options** panel in the wizard, also reachable from the first step for any folder Aura built) edits the package's own `settings.toml` and `mods/state.toml`, diagnoses it, and resets what the game generated while it was played. With no flags it only reads and reports.
+
+```
+aura-cli ps1-options ./games/SLUS-00561/package                                  # show settings, enhancements, findings
+aura-cli ps1-options ./games/SLUS-00561/package --preset balanced                # safe | balanced | sharp | max
+aura-cli ps1-options ./games/SLUS-00561/package --set renderer=vulkan --set fullscreen=borderless
+aura-cli ps1-options ./games/SLUS-00561/package --mod fast-loading=off --mod pgxp=off
+aura-cli ps1-options ./games/SLUS-00561/package --reset-state                    # add --include-saves to move saves too
+```
+
+- **What it offers is what the runtime has.** Renderers are `software`, `opengl` and `vulkan`; internal resolution is `native` / `720p` / `1080p` / `1440p` / `4k` (a preset's scale is `ceil(lines / reference)`, so 4K is 9x per side, 81x the pixels); fullscreen is windowed / borderless / exclusive; vsync is `on` / `off` / `immediate` / `adaptive` / `vrr`. There is **no Direct3D 12 renderer for PS1** (D3D12 exists only in the N64 recompilations), and **no generic "stretch"**: PSXRecomp widens the picture only through a per-game widescreen *mod*, and clamps any other aspect to 4:3 before the game starts, so `--set aspect=16:9` is refused unless the package carries one.
+- **Vulkan** is only honoured when the game's `game.toml` has `[video] offer_vulkan = true`; otherwise the runtime logs a note and uses OpenGL. Choosing Vulkan sets that for you (and keeps `game.toml.aura-backup`). It is marked experimental upstream.
+- **Edits are line based**: comments, key order and line endings survive, only the keys above are touched, and the first version of each file is kept beside it as `<name>.aura-backup`. Values the runtime would reject are refused before anything is written.
+- **Findings** flag a 4K+ internal resolution, enhancements the package itself calls deprecated heuristics (Fast Loading), PGXP, a disc image that is no longer where the game expects it, stale compile locks, a Vulkan setting the runtime would ignore, and past freeze reports (grouped by where they stopped; the same place in more than one run points at the recompiled game, not at your settings).
+- **`--reset-state`** moves the overlay cache, captured overlays, freeze reports and last-run report into `aura-state-backup-<time>/` inside the game folder. Nothing is deleted, saves stay unless `--include-saves`, and it refuses while the game is running.
+
 ### Interactive Call Graph
 - **D3.js-ready data** — Produces a JSON-serializable graph (nodes + edges) optimized for force-directed visualization in the web UI. Each node carries function name, address, size, library attribution, call count, called-by count, and entry-point/external flags. Each edge carries source/target IDs, callsite address, and call kind (jal/jump).
 - **Graph statistics** — Includes summary stats: total/named/external function counts, total edges, max call depth (BFS from entry point), detected libraries, and top-20 hub functions (ranked by call + called-by score).
@@ -378,6 +395,7 @@ Aura-Decomp-Tool/
 │   │   ├── psx_exe.rs        # PS-X EXE header parsing
 │   │   ├── ps1_ingest.rs     # PS1 disc -> workspace (cue/bin + manifest)
 │   │   ├── ps1_build.rs      # PSXRecomp driver: toolchain, setup script, packaging
+│   │   ├── ps1_options.rs    # built-game options: video settings, mods, diagnosis, state reset
 │   │   ├── launcher_core.rs  # shared by the aura-launch binary (cli/src/launch.rs)
 │   │   ├── ps2_ingest.rs     # PS2 disc -> boot ELF -> ps2_recomp project pipeline
 │   │   ├── lzx.rs            # pure-Rust LZX decompressor (Xbox 360 XEX)
@@ -479,8 +497,9 @@ aura-cli ps2-build ./games/SLUS-20312 --yes                                     
 aura-cli ps1-ingest "Game (USA).chd" --out ./games                               # PS1: CHD/cue/bin/iso -> workspace
 aura-cli ps1-build ./games/SLUS-00561 --plan                                     # what a PS1 build would download
 aura-cli ps1-build ./games/SLUS-00561 --yes                                      # one click: native PS1 game
+aura-cli ps1-options ./games/SLUS-00561/package --preset balanced                # tune a built game (see "Tune a built PS1 game")
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`, `disc-info`, `disc-ls`, `disc-extract`, `ps2-ingest`, `ps2-package`, `ps2-build`, `ps1-ingest`, `ps1-build`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`, `--all` (disc-extract / ps2-ingest: whole disc), `--recompiler PATH` (ps2-ingest), `--exe PATH` / `--launcher PATH` / `--copy` (ps2-package), `--plan` / `--yes` / `--cache DIR` / `--no-package` / `--jobs N` / `--fast` / `--lean` / `--upstream-defaults` (ps2-build; `--plan/--yes/--cache/--no-package/--jobs` also apply to ps1-build). Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database; set `AURA_PS2RECOMP` to the path of a `ps2_recomp` binary so the wizard/CLI can find it without `PATH`; set `AURA_LAUNCHER` to an `aura-launch` binary if it is not beside the program running the packaging; set `AURA_BUILD_CACHE` (PS2) or `AURA_PS1_BUILD_CACHE` (PS1) to move the one-click build cache.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`, `disc-info`, `disc-ls`, `disc-extract`, `ps2-ingest`, `ps2-package`, `ps2-build`, `ps1-ingest`, `ps1-build`, `ps1-options`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`, `--all` (disc-extract / ps2-ingest: whole disc), `--recompiler PATH` (ps2-ingest), `--exe PATH` / `--launcher PATH` / `--copy` (ps2-package), `--plan` / `--yes` / `--cache DIR` / `--no-package` / `--jobs N` / `--lean` / `--fast` / `--upstream-defaults` (ps2-build; `--plan/--yes/--cache/--no-package/--jobs` also apply to ps1-build), `--set K=V` / `--preset NAME` / `--mod F=on|off` / `--reset-state` / `--include-saves` (ps1-options). Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database; set `AURA_PS2RECOMP` to the path of a `ps2_recomp` binary so the wizard/CLI can find it without `PATH`; set `AURA_LAUNCHER` to an `aura-launch` binary if it is not beside the program running the packaging; set `AURA_BUILD_CACHE` (PS2) or `AURA_PS1_BUILD_CACHE` (PS1) to move the one-click build cache.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

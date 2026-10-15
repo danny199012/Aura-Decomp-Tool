@@ -420,3 +420,130 @@ export const buildPs1Game = (workspace: string, cacheDir: string | null, allowDo
   call<Ps1BuildResult>('build_ps1_game', { workspace, cacheDir, allowDownloads });
 
 export const playPs1Game = (exe: string, disc: string | null) => call<void>('play_ps1_game', { exe, disc });
+
+// ---------------------------------------------------------------------------
+// PS1: play options, enhancements, diagnosis and state reset for a built game
+// ---------------------------------------------------------------------------
+
+export interface Ps1PlayOptions {
+  /** "software" | "opengl" | "vulkan" */
+  renderer: string;
+  /** A preset ("native", "720p", "1080p", "1440p", "4k"…), "3x", or a line count. */
+  internal_resolution: string;
+  /** "W:H"; only honoured when the game has a widescreen mod. */
+  aspect_ratio: string;
+  /** 0 windowed, 1 borderless, 2 exclusive. */
+  fullscreen: number;
+  /** "on" | "off" | "immediate" | "adaptive" | "vrr" */
+  vsync: string;
+  /** 0 leaves the runtime's own choice alone. */
+  window_width: number;
+}
+
+export interface Ps1Choice {
+  value: string;
+  label: string;
+  detail: string;
+}
+
+export interface Ps1OptionChoices {
+  renderers: Ps1Choice[];
+  resolutions: Ps1Choice[];
+  fullscreen: Ps1Choice[];
+  vsync: Ps1Choice[];
+  /** Things people ask for that this runtime cannot do, with the reason. */
+  unavailable: Ps1Choice[];
+}
+
+export interface Ps1Preset {
+  id: string;
+  label: string;
+  detail: string;
+  renderer: string | null;
+  internal_resolution: string;
+  vsync: string | null;
+}
+
+export interface Ps1ModFeature {
+  package_id: string;
+  feature_id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  default_enabled: boolean;
+  deprecated: boolean;
+}
+
+export interface Ps1Finding {
+  severity: 'error' | 'warn' | 'info';
+  code: string;
+  title: string;
+  detail: string;
+  fix: string | null;
+}
+
+export interface Ps1StateSummary {
+  cache_bytes: number;
+  cache_files: number;
+  overlay_captures: boolean;
+  freeze_dumps: number;
+  has_last_report: boolean;
+  stale_locks: number;
+  saves_bytes: number;
+}
+
+export interface Ps1OptionsInfo {
+  package_dir: string;
+  title: string;
+  exe: string;
+  game_running: boolean;
+  settings_path: string;
+  settings_exists: boolean;
+  options: Ps1PlayOptions;
+  resolution_label: string;
+  internal_scale: number | null;
+  disc_path: string | null;
+  widescreen_available: boolean;
+  widescreen_mods: string[];
+  /** game.toml offers Vulkan; without it the runtime ignores the setting. */
+  vulkan_offered: boolean;
+  mods: Ps1ModFeature[];
+  choices: Ps1OptionChoices;
+  presets: Ps1Preset[];
+  findings: Ps1Finding[];
+  state: Ps1StateSummary;
+}
+
+export interface Ps1WriteReport {
+  settings_path: string;
+  backup_path: string | null;
+  changed: string[];
+  warnings: string[];
+}
+
+export interface Ps1ModReport {
+  state_path: string;
+  backup_path: string | null;
+  package_id: string;
+  feature_id: string;
+  enabled: boolean;
+  changed: boolean;
+}
+
+export interface Ps1ResetReport {
+  backup_dir: string | null;
+  moved: string[];
+  bytes: number;
+  skipped: string[];
+}
+
+export const readPs1Options = (packageDir: string) => call<Ps1OptionsInfo>('ps1_options_read', { packageDir });
+
+export const applyPs1Options = (packageDir: string, options: Ps1PlayOptions) =>
+  call<Ps1WriteReport>('ps1_options_apply', { packageDir, options });
+
+export const setPs1Mod = (packageDir: string, packageId: string, featureId: string, enabled: boolean) =>
+  call<Ps1ModReport>('ps1_options_set_mod', { packageDir, packageId, featureId, enabled });
+
+export const resetPs1State = (packageDir: string, includeSaves: boolean) =>
+  call<Ps1ResetReport>('ps1_options_reset_state', { packageDir, includeSaves });

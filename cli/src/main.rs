@@ -58,6 +58,16 @@ struct Args {
     /// `--lean`: experimental recompiler variant that keeps far fewer entry
     /// points for ordinary indirect calls (ps2-build).
     lean: bool,
+    /// `--set key=value` (repeatable): change a video option (ps1-options).
+    set: Vec<String>,
+    /// `--preset NAME`: apply a video preset (ps1-options).
+    preset: Option<String>,
+    /// `--mod FEATURE=on|off` (repeatable): switch an enhancement (ps1-options).
+    mods: Vec<String>,
+    /// `--reset-state`: move generated state into a backup folder (ps1-options).
+    reset_state: bool,
+    /// `--include-saves`: also move save games when resetting (ps1-options).
+    include_saves: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -77,6 +87,11 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--upstream-defaults" => a.upstream_defaults = true,
             "--fast" => a.fast = true,
             "--lean" => a.lean = true,
+            "--reset-state" => a.reset_state = true,
+            "--include-saves" => a.include_saves = true,
+            "--set" => { a.set.push(argv.get(i + 1).cloned().ok_or("--set needs key=value (renderer, resolution, aspect, fullscreen, vsync, window-width)")?); i += 1; }
+            "--preset" => { a.preset = Some(argv.get(i + 1).cloned().ok_or("--preset needs a name (safe, balanced, sharp, max)")?); i += 1; }
+            "--mod" => { a.mods.push(argv.get(i + 1).cloned().ok_or("--mod needs FEATURE=on|off")?); i += 1; }
             "--cache" => { a.cache = Some(argv.get(i + 1).cloned().ok_or("--cache needs a value (folder)")?); i += 1; }
             "--jobs" => { a.jobs = Some(argv.get(i + 1).and_then(|x| x.parse::<usize>().ok()).ok_or("--jobs needs a number")?); i += 1; }
             "--exe" => { a.exe = Some(argv.get(i + 1).cloned().ok_or("--exe needs a value (path to the built runtime)")?); i += 1; }
@@ -116,7 +131,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps1-ingest      PS1 disc image (.chd/.cue/.bin/.iso) -> workspace with a cue/bin PSXRecomp can build (--out DIR)\n  ps1-build       One-click: build a PS1 workspace into a native game with PSXRecomp (--plan, --yes)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --lean          (ps2-build) experimental: stop expanding every function that makes an indirect call (much smaller output)\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps1-ingest      PS1 disc image (.chd/.cue/.bin/.iso) -> workspace with a cue/bin PSXRecomp can build (--out DIR)\n  ps1-build       One-click: build a PS1 workspace into a native game with PSXRecomp (--plan, --yes)\n  ps1-options     Tune a packaged PS1 game: video settings, enhancements, diagnose, reset state (--set, --preset, --mod, --reset-state)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --lean          (ps2-build) experimental: stop expanding every function that makes an indirect call (much smaller output)\n  --set K=V       (ps1-options) renderer | resolution | aspect | fullscreen | vsync | window-width (repeatable)\n  --preset NAME   (ps1-options) safe | balanced | sharp | max\n  --mod F=on|off  (ps1-options) switch an enhancement such as fast-loading, pgxp, hd-textures\n  --reset-state   (ps1-options) move the overlay cache, captures and freeze reports to a backup folder\n  --include-saves (ps1-options) with --reset-state, move save games too\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1174,176 @@ fn cmd_ps1_build(a: &Args) -> Result<String, String> {
     Ok(t)
 }
 
+fn cmd_ps1_options(a: &Args) -> Result<String, String> {
+    let dir = a.file.as_ref().ok_or("ps1-options needs a game folder (the one holding the game's .exe and aura-package.json)")?;
+    let dir = std::path::Path::new(dir);
+    let before = ps1_options::read_options(dir)?;
+
+    // 1. Video options: a preset first, then individual --set values on top.
+    let mut opts = before.options.clone();
+    let mut touch_options = false;
+    if let Some(p) = &a.preset {
+        ps1_options::apply_preset(&mut opts, p)?;
+        touch_options = true;
+    }
+    for kv in &a.set {
+        let (k, v) = kv.split_once('=').ok_or_else(|| format!("--set expects key=value (got \"{kv}\")"))?;
+        let v = v.trim();
+        match k.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "renderer" => opts.renderer = v.to_ascii_lowercase(),
+            "resolution" | "internal_resolution" => opts.internal_resolution = v.to_ascii_lowercase(),
+            "aspect" | "aspect_ratio" => opts.aspect_ratio = v.to_string(),
+            "fullscreen" => {
+                opts.fullscreen = match v.to_ascii_lowercase().as_str() {
+                    "0" | "windowed" => 0,
+                    "1" | "borderless" => 1,
+                    "2" | "exclusive" => 2,
+                    other => return Err(format!("fullscreen must be windowed, borderless or exclusive (got \"{other}\").")),
+                }
+            }
+            "vsync" => opts.vsync = v.to_ascii_lowercase(),
+            "window_width" => {
+                opts.window_width = v.parse::<u32>().map_err(|_| format!("window-width must be a number (got \"{v}\")."))?
+            }
+            other => {
+                return Err(format!(
+                    "Unknown option \"{other}\" for --set (renderer, resolution, aspect, fullscreen, vsync, window-width)."
+                ))
+            }
+        }
+        touch_options = true;
+    }
+    let written = if touch_options { Some(ps1_options::write_options(dir, &opts)?) } else { None };
+
+    // 2. Enhancements.
+    let mut mod_reports = Vec::new();
+    for spec in &a.mods {
+        let (name, state) = spec.split_once('=').ok_or_else(|| format!("--mod expects FEATURE=on|off (got \"{spec}\")"))?;
+        let enabled = match state.trim().to_ascii_lowercase().as_str() {
+            "on" | "true" | "1" | "yes" => true,
+            "off" | "false" | "0" | "no" => false,
+            other => return Err(format!("--mod state must be on or off (got \"{other}\").")),
+        };
+        let name = name.trim();
+        let hits: Vec<_> = before
+            .mods
+            .iter()
+            .filter(|m| m.feature_id == name || m.package_id == name || m.package_id.ends_with(&format!(".{name}")))
+            .collect();
+        match hits.as_slice() {
+            [m] => mod_reports.push(ps1_options::set_mod_enabled(dir, &m.package_id, &m.feature_id, enabled)?),
+            [] => {
+                let known: Vec<_> = before.mods.iter().map(|m| m.feature_id.clone()).collect();
+                return Err(format!("No enhancement called \"{name}\" in this game (it has: {}).", known.join(", ")));
+            }
+            _ => return Err(format!("\"{name}\" matches more than one enhancement; use the full package id.")),
+        }
+    }
+
+    // 3. Generated state.
+    let reset = if a.reset_state { Some(ps1_options::reset_state(dir, a.include_saves)?) } else { None };
+
+    let after = ps1_options::read_options(dir)?;
+    if a.json {
+        let v = serde_json::json!({
+            "info": after,
+            "written": written,
+            "mods": mod_reports,
+            "reset": reset,
+        });
+        return Ok(serde_json::to_string_pretty(&v).unwrap_or_default());
+    }
+
+    let mut t = String::new();
+    if let Some(w) = &written {
+        if w.changed.is_empty() {
+            t.push_str("Video settings: already as requested, nothing changed.\n");
+        } else {
+            t.push_str(&format!("Video settings saved to {}\n", w.settings_path));
+            for c in &w.changed { t.push_str(&format!("  {c}\n")); }
+        }
+        if let Some(b) = &w.backup_path { t.push_str(&format!("  original kept as {b}\n")); }
+        for x in &w.warnings { t.push_str(&format!("warning: {x}\n")); }
+    }
+    for m in &mod_reports {
+        t.push_str(&format!(
+            "{}: {}\n",
+            m.feature_id,
+            if !m.changed { "already that way" } else if m.enabled { "switched on" } else { "switched off" }
+        ));
+    }
+    if let Some(r) = &reset {
+        match &r.backup_dir {
+            None => t.push_str("Nothing to reset: the game has not generated any state yet.\n"),
+            Some(d) => {
+                t.push_str(&format!("Moved {} item(s) ({}) to {d}\n", r.moved.len(), fmt_size(r.bytes)));
+                for m in &r.moved { t.push_str(&format!("  {m}\n")); }
+                for x in &r.skipped { t.push_str(&format!("  could not move {x}\n")); }
+            }
+        }
+    }
+    if written.is_some() || !mod_reports.is_empty() || reset.is_some() {
+        t.push('\n');
+    }
+
+    t.push_str(&format!("{} ({})\n", after.title, after.exe));
+    t.push_str(&format!(
+        "Settings:    {}{}\n",
+        after.settings_path,
+        if after.settings_exists { "" } else { " (not created yet; the game's own defaults apply)" }
+    ));
+    let o = &after.options;
+    t.push_str(&format!("Renderer:    {}\n", o.renderer));
+    t.push_str(&format!("Resolution:  {} - {}\n", o.internal_resolution, after.resolution_label));
+    t.push_str(&format!(
+        "Aspect:      {}{}\n",
+        o.aspect_ratio,
+        if after.widescreen_available {
+            format!(" (widescreen mod: {})", after.widescreen_mods.join(", "))
+        } else {
+            " (fixed: this game has no widescreen mod)".to_string()
+        }
+    ));
+    t.push_str(&format!(
+        "Fullscreen:  {}\n",
+        match o.fullscreen { 0 => "windowed", 1 => "borderless", _ => "exclusive" }
+    ));
+    t.push_str(&format!("VSync:       {}\n", o.vsync));
+    if o.window_width != 0 { t.push_str(&format!("Window:      {} px wide\n", o.window_width)); }
+    if let Some(d) = &after.disc_path { t.push_str(&format!("Disc:        {d}\n")); }
+    if after.game_running { t.push_str("The game is running; close it before changing settings.\n"); }
+    if !after.mods.is_empty() {
+        t.push_str("\nEnhancements:\n");
+        for m in &after.mods {
+            t.push_str(&format!(
+                "  [{}] {:<28} {}{}\n",
+                if m.enabled { "on " } else { "off" },
+                m.feature_id,
+                m.name,
+                if m.deprecated { "  (deprecated heuristic)" } else { "" }
+            ));
+        }
+    }
+    let s = &after.state;
+    t.push_str(&format!(
+        "\nGenerated state: cache {} ({} files), overlay captures {}, {} freeze report(s), {} stale lock(s); saves {}\n",
+        fmt_size(s.cache_bytes),
+        s.cache_files,
+        if s.overlay_captures { "present" } else { "none" },
+        s.freeze_dumps,
+        s.stale_locks,
+        fmt_size(s.saves_bytes)
+    ));
+    if !after.findings.is_empty() {
+        t.push_str("\nFindings:\n");
+        for f in &after.findings {
+            t.push_str(&format!("  [{}] {}\n        {}\n", f.severity, f.title, f.detail));
+            if let Some(fix) = &f.fix { t.push_str(&format!("        Try: {fix}\n")); }
+        }
+    }
+    Ok(t)
+}
+
 fn cmd_ps2_package(a: &Args) -> Result<String, String> {
     let ws = a.file.as_ref().ok_or("ps2-package needs a workspace folder (the one `ps2-ingest` wrote)")?;
     let exe = a.exe.as_ref().ok_or("ps2-package needs --exe PATH (the runtime executable you built)")?;
@@ -1323,6 +1508,7 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "ps2-ingest" => cmd_ps2_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps1-ingest" => cmd_ps1_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps1-build" => cmd_ps1_build(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "ps1-options" => cmd_ps1_options(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-package" => cmd_ps2_package(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-build" => cmd_ps2_build(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         cmd => Err(format!("Unknown command: {cmd}. Try --help")),

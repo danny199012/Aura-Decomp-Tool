@@ -26,6 +26,7 @@ mod chd_disc;
 mod disc;
 mod ps1_build;
 mod ps1_ingest;
+mod ps1_options;
 mod psx_exe;
 mod ps2_ingest;
 mod ps2_package;
@@ -1326,6 +1327,49 @@ fn play_ps1_game(exe: String, disc: Option<String>) -> Result<(), String> {
         .map_err(|e| format!("Could not start the game: {e}"))
 }
 
+/// PS1: what the options screen needs for a packaged game folder -- current
+/// video settings, optional enhancements, findings and what a reset would move.
+#[tauri::command]
+async fn ps1_options_read(package_dir: String) -> Result<ps1_options::Ps1OptionsInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || ps1_options::read_options(Path::new(&package_dir)))
+        .await
+        .map_err(|e| format!("Options task failed: {e}"))?
+}
+
+/// PS1: save the video choices into the package's settings.toml (the first
+/// version of the file is kept beside it as `settings.toml.aura-backup`).
+#[tauri::command]
+async fn ps1_options_apply(package_dir: String, options: ps1_options::PlayOptions) -> Result<ps1_options::WriteReport, String> {
+    tauri::async_runtime::spawn_blocking(move || ps1_options::write_options(Path::new(&package_dir), &options))
+        .await
+        .map_err(|e| format!("Options task failed: {e}"))?
+}
+
+/// PS1: switch one optional enhancement (a mod feature) on or off.
+#[tauri::command]
+async fn ps1_options_set_mod(
+    package_dir: String,
+    package_id: String,
+    feature_id: String,
+    enabled: bool,
+) -> Result<ps1_options::ModReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ps1_options::set_mod_enabled(Path::new(&package_dir), &package_id, &feature_id, enabled)
+    })
+    .await
+    .map_err(|e| format!("Options task failed: {e}"))?
+}
+
+/// PS1: move the runtime's generated state (overlay cache, captures, freeze
+/// reports) into a timestamped backup folder so the next run starts clean.
+/// Nothing is deleted; saves are only moved when asked.
+#[tauri::command]
+async fn ps1_options_reset_state(package_dir: String, include_saves: bool) -> Result<ps1_options::ResetReport, String> {
+    tauri::async_runtime::spawn_blocking(move || ps1_options::reset_state(Path::new(&package_dir), include_saves))
+        .await
+        .map_err(|e| format!("Reset task failed: {e}"))?
+}
+
 /// Native picker for the built runtime executable. `None` if cancelled.
 #[tauri::command]
 async fn pick_runtime_exe(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
@@ -1441,6 +1485,10 @@ async fn main() {
             plan_ps1_build,
             build_ps1_game,
             play_ps1_game,
+            ps1_options_read,
+            ps1_options_apply,
+            ps1_options_set_mod,
+            ps1_options_reset_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");
