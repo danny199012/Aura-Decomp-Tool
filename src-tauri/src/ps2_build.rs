@@ -73,6 +73,12 @@ pub struct BuildPlan {
     pub blockers: Vec<String>,
     pub can_build: bool,
     pub pinned_commit: String,
+    /// The lean recompiler variant was requested (see [`apply_lean_patch`]).
+    pub lean_indirect_calls: bool,
+    /// The lean variant is already built in the cache (no extra step needed).
+    pub lean_ready: bool,
+    /// How much of this game the recompiler will expand, measured at ingest.
+    pub indirect_profile: Option<ps2_ingest::IndirectProfile>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,6 +96,10 @@ pub struct BuildOptions {
     /// the Visual Studio generator leaves empty, so without this flag none of
     /// it applies. Faster game, but a longer and more memory-hungry link.
     pub fast_release: bool,
+    /// Use the experimental *lean* recompiler: an ordinary indirect call
+    /// (`jalr $ra`) no longer turns every instruction of its function into a
+    /// resumable entry point. See [`apply_lean_patch`] for what that changes.
+    pub lean_indirect_calls: bool,
     pub jobs: Option<usize>,
     // Overrides, mainly for tests and for reusing an existing checkout/build.
     pub cmake: Option<PathBuf>,
@@ -113,6 +123,7 @@ pub struct BuildResult {
     pub stage_secs: Vec<(String, f64)>,
     pub native_feel: bool,
     pub fast_release: bool,
+    pub lean_indirect_calls: bool,
     pub package: Option<PackageResult>,
     pub warnings: Vec<String>,
 }
@@ -402,7 +413,13 @@ pub fn plan_build(workspace: &Path, opts: &BuildOptions) -> Result<BuildPlan, St
     let src = source_dir(opts, &cache);
     let source_cached = opts.source_override.is_some() || source_is_pinned(&src);
     let recompiler_cached = opts.recompiler.as_ref().map(|p| p.is_file()).unwrap_or(false)
+        || recompiler_variant(&cache, false).is_file()
         || recompiler_in(&cache.join("build-recomp")).is_some();
+    let lean_ready = opts.recompiler.is_some() || recompiler_variant(&cache, true).is_file();
+    let indirect_profile = m
+        .get("recomp")
+        .and_then(|r| r.get("indirect_profile"))
+        .and_then(|v| serde_json::from_value::<ps2_ingest::IndirectProfile>(v.clone()).ok());
     let runtime_configured = cache.join("build-runtime").join("CMakeCache.txt").is_file();
 
     let mut downloads: Vec<DownloadItem> = vec![];
@@ -446,7 +463,8 @@ pub fn plan_build(workspace: &Path, opts: &BuildOptions) -> Result<BuildPlan, St
     // Observed on a 20-core machine: ~30 s + 0.13 s per function; scale by cores.
     let estimate_secs = (30.0 + 0.13 * functions as f64 * (20.0 / n as f64)) as u64
         + if runtime_configured { 0 } else { 120 }
-        + if recompiler_cached { 0 } else { 150 };
+        + if recompiler_cached { 0 } else { 150 }
+        + if opts.lean_indirect_calls && !lean_ready { 45 } else { 0 };
 
     let mut blockers: Vec<String> = toolchain.problems.clone();
     if !extract_all {
@@ -483,6 +501,9 @@ pub fn plan_build(workspace: &Path, opts: &BuildOptions) -> Result<BuildPlan, St
         blockers,
         can_build,
         pinned_commit: PINNED_COMMIT.to_string(),
+        lean_indirect_calls: opts.lean_indirect_calls,
+        lean_ready,
+        indirect_profile,
     })
 }
 
@@ -642,6 +663,159 @@ fn ensure_source(r: &mut Runner, git: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Lean indirect calls: an optional, experimental recompiler variant
+// ---------------------------------------------------------------------------
+//
+// Upstream's control-flow analyzer treats every `jalr` as an *unresolved
+// jump* that must match a switch-table pattern. A `jalr $ra, rs` is just an
+// indirect call (a virtual or function-pointer call) that returns to
+// `address + 8`, which upstream already registers as a resume entry. Because
+// virtual calls never look like a switch table, one of them makes the
+// recompiler promote **every instruction of the function** to a resumable
+// entry point. Measured on three retail/homebrew games, 89-100% of all
+// "fallback entries" come from functions whose only unresolved jumps are such
+// calls; on Midnight Club 3 Remix that was 947,446 entries (7,760 functions).
+//
+// The lean variant is a one-statement change to that analyzer: a `jalr $ra`
+// keeps its resume entry and skips the table search. The change is applied to
+// the cached source only while the lean recompiler is being built, and the
+// source is restored afterwards, so the pristine pinned tree (also used for
+// the runtime build) is never left modified.
+
+/// Source file of the pinned upstream the lean variant changes.
+pub const LEAN_PATCH_FILE: &str = "ps2xRecomp/src/lib/control_flow_analyzer.cpp";
+/// Present in a patched file; tells the states apart.
+pub const LEAN_MARKER: &str = "AURA lean-indirect-calls";
+
+const LEAN_ANCHOR: &str = "                if (jrInst->function == SPECIAL_JALR)\n                {\n                    queueResumeEntryTarget(jrInst->address + 8u);\n                }\n";
+const LEAN_REPLACEMENT: &str = "                if (jrInst->function == SPECIAL_JALR)\n                {\n                    queueResumeEntryTarget(jrInst->address + 8u);\n                    // AURA lean-indirect-calls: `jalr $ra, rs` is an ordinary indirect call. It\n                    // returns to address+8 (queued above), so it needs no jump table and must not\n                    // promote every instruction of the function to an entry point.\n                    if (jrInst->rd == 31)\n                    {\n                        continue;\n                    }\n                }\n";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeanState {
+    /// The expected upstream code is present and unmodified.
+    Pristine,
+    /// Already carries the lean change.
+    Patched,
+    /// Neither: upstream is not the version the lean change was written for.
+    Unavailable,
+}
+
+fn with_eol(s: &str, crlf: bool) -> String {
+    if crlf { s.replace('\n', "\r\n") } else { s.to_string() }
+}
+
+/// Which state the analyzer source text is in.
+pub fn lean_patch_state(text: &str) -> LeanState {
+    if text.contains(LEAN_MARKER) {
+        return LeanState::Patched;
+    }
+    if text.contains(&with_eol(LEAN_ANCHOR, text.contains("\r\n"))) {
+        LeanState::Pristine
+    } else {
+        LeanState::Unavailable
+    }
+}
+
+/// The analyzer source with the lean change applied (line endings preserved).
+pub fn apply_lean_patch(text: &str) -> Result<String, String> {
+    match lean_patch_state(text) {
+        LeanState::Patched => Err("The analyzer source already carries the lean change.".into()),
+        LeanState::Unavailable => Err(format!(
+            "Lean mode is not available: {LEAN_PATCH_FILE} is not the version it was written for \
+             (tested against {})",
+            &PINNED_COMMIT[..8]
+        )),
+        LeanState::Pristine => {
+            let crlf = text.contains("\r\n");
+            Ok(text.replacen(&with_eol(LEAN_ANCHOR, crlf), &with_eol(LEAN_REPLACEMENT, crlf), 1))
+        }
+    }
+}
+
+/// Undo [`apply_lean_patch`].
+pub fn revert_lean_patch(text: &str) -> Result<String, String> {
+    if !text.contains(LEAN_MARKER) {
+        return Err("The analyzer source does not carry the lean change.".into());
+    }
+    let crlf = text.contains("\r\n");
+    let repl = with_eol(LEAN_REPLACEMENT, crlf);
+    if !text.contains(&repl) {
+        return Err("The lean change in the analyzer source was edited and cannot be reverted automatically.".into());
+    }
+    Ok(text.replacen(&repl, &with_eol(LEAN_ANCHOR, crlf), 1))
+}
+
+/// Where a built recompiler variant is kept: `<cache>/recompiler/<variant>/`.
+pub fn recompiler_variant(cache: &Path, lean: bool) -> PathBuf {
+    cache
+        .join("recompiler")
+        .join(if lean { "lean" } else { "standard" })
+        .join(exe_name("ps2_recomp"))
+}
+
+fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
+    if let Some(p) = to.parent() {
+        fs::create_dir_all(p).map_err(|e| format!("Cannot create {}: {e}", p.display()))?;
+    }
+    fs::copy(from, to).map(|_| ()).map_err(|e| format!("Cannot copy {} to {}: {e}", from.display(), to.display()))
+}
+
+/// The recompiler to run: the standard one, or (`lean`) the variant built from
+/// the lean change. Both are built once and kept in the cache.
+pub fn ensure_recompiler(
+    r: &mut Runner,
+    cmake: &Path,
+    src: &Path,
+    cache: &Path,
+    jobs: usize,
+    lean: bool,
+) -> Result<PathBuf, String> {
+    let build_recomp = cache.join("build-recomp");
+    let standard = recompiler_variant(cache, false);
+    if !standard.is_file() {
+        // Caches from before variants existed already hold the standard build.
+        let built = match recompiler_in(&build_recomp) {
+            Some(p) => p,
+            None => {
+                r.stage("recompiler-build", "Building the ps2_recomp recompiler (first time only)…", 0.08)?;
+                r.run("CMake configure (recompiler)", cmake, &recompiler_configure_args(src, &build_recomp, jobs), None, |_| None)?;
+                r.stage("recompiler-build", "Compiling the recompiler…", 0.16)?;
+                r.run("CMake build (recompiler)", cmake, &build_args(&build_recomp, "ps2_recomp", jobs), None, |_| None)?;
+                recompiler_in(&build_recomp).ok_or_else(|| {
+                    format!("The recompiler build finished but ps2_recomp was not found under {}.", build_recomp.display())
+                })?
+            }
+        };
+        copy_file(&built, &standard)?;
+    }
+    if !lean {
+        return Ok(standard);
+    }
+
+    let lean_exe = recompiler_variant(cache, true);
+    if lean_exe.is_file() {
+        return Ok(lean_exe);
+    }
+    r.stage("recompiler-build", "Building the lean recompiler variant (first time only)…", 0.20)?;
+    let file = src.join(LEAN_PATCH_FILE);
+    let original = fs::read(&file)
+        .map_err(|e| format!("Cannot read {}: {e}", file.display()))
+        .and_then(|b| String::from_utf8(b).map_err(|_| format!("{} is not UTF-8 text.", file.display())))?;
+    let patched = apply_lean_patch(&original)?;
+    fs::write(&file, &patched).map_err(|e| format!("Cannot write {}: {e}", file.display()))?;
+    // Whatever happens next, the pristine source goes back.
+    let built = r.run("CMake build (lean recompiler)", cmake, &build_args(&build_recomp, "ps2_recomp", jobs), None, |_| None);
+    let restored = fs::write(&file, &original).map_err(|e| format!("Cannot restore {}: {e}", file.display()));
+    built?;
+    restored?;
+    let exe = recompiler_in(&build_recomp).ok_or_else(|| {
+        format!("The lean recompiler build finished but ps2_recomp was not found under {}.", build_recomp.display())
+    })?;
+    copy_file(&exe, &lean_exe)?;
+    Ok(lean_exe)
+}
+
 /// Build the whole game. `progress` returns `false` to cancel.
 pub fn build_game(
     workspace: &Path,
@@ -685,19 +859,17 @@ pub fn build_game(
     }
 
     // ----- recompiler -------------------------------------------------------------
-    let build_recomp = cache.join("build-recomp");
-    let recompiler: PathBuf = match opts.recompiler.clone().filter(|p| p.is_file()).or_else(|| recompiler_in(&build_recomp)) {
+    let recompiler: PathBuf = match opts.recompiler.clone().filter(|p| p.is_file()) {
         Some(p) => p,
-        None => {
-            r.stage("recompiler-build", "Building the ps2_recomp recompiler (first time only)…", 0.08)?;
-            r.run("CMake configure (recompiler)", &cmake, &recompiler_configure_args(&src, &build_recomp, jobs), None, |_| None)?;
-            r.stage("recompiler-build", "Compiling the recompiler…", 0.16)?;
-            r.run("CMake build (recompiler)", &cmake, &build_args(&build_recomp, "ps2_recomp", jobs), None, |_| None)?;
-            recompiler_in(&build_recomp).ok_or_else(|| {
-                format!("The recompiler build finished but ps2_recomp was not found under {}.", build_recomp.display())
-            })?
-        }
+        None => ensure_recompiler(&mut r, &cmake, &src, &cache, jobs, opts.lean_indirect_calls)?,
     };
+    if opts.lean_indirect_calls {
+        warnings.push(
+            "Lean indirect calls is experimental: the game was recompiled with a modified recompiler that \
+             keeps far fewer resumable entry points and so also generates different code. If it misbehaves, rebuild without it."
+                .into(),
+        );
+    }
 
     // ----- recompile the game ---------------------------------------------------
     r.stage("recompile", "Recompiling the game's code to C++…", 0.26)?;
@@ -766,6 +938,7 @@ pub fn build_game(
         stage_secs: r.stage_secs.clone(),
         native_feel: opts.native_feel,
         fast_release: opts.fast_release,
+        lean_indirect_calls: opts.lean_indirect_calls,
         package,
         warnings,
     })

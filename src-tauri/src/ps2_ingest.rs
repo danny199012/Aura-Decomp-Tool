@@ -459,6 +459,8 @@ pub struct IngestResult {
     /// `ret0@0xADDR` bindings written to `general.stubs` (BIOS-patching SDK
     /// routines); empty when none were detected.
     pub stubbed: Vec<String>,
+    /// What indirect calls/jumps will cost the recompiler (see [`IndirectProfile`]).
+    pub indirect_profile: IndirectProfile,
     pub recompiler: Option<RecompilerRun>,
     pub next_steps: Vec<String>,
     pub warnings: Vec<String>,
@@ -524,6 +526,144 @@ pub fn kernel_stub_bindings(funcs: &[engine::FunctionEntry]) -> Vec<String> {
     v.sort();
     v.dedup();
     v
+}
+
+/// How much of a game the recompiler will expand because of indirect jumps.
+///
+/// Upstream promotes **every instruction** of a function to a resumable entry
+/// point as soon as the function contains an indirect jump or call it cannot
+/// resolve. Virtual and function-pointer calls (`jalr`) never look like a
+/// switch table, so in C++ games that is most functions. This is the cost
+/// that makes such builds large and slow, measured here before the
+/// recompiler runs. The numbers are an upper bound: the recompiler does
+/// resolve some switch tables on its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndirectProfile {
+    pub functions: usize,
+    /// Functions containing a `jalr $ra` (an ordinary indirect call).
+    pub functions_with_indirect_calls: usize,
+    /// Functions containing a `jr rs` (rs != $ra) or a `jalr` that does not link `$ra`.
+    pub functions_with_indirect_jumps: usize,
+    pub instructions: u64,
+    /// Entry points a standard build would add for these functions.
+    pub fallback_entries_standard: u64,
+    /// Entry points the lean build would add (indirect jumps only).
+    pub fallback_entries_lean: u64,
+}
+
+/// True when the indirect jump at `words[at]` is preceded by the switch-table
+/// idiom the recompiler resolves on its own: `sltiu/slti idx, N` bounds the
+/// index, `sll` scales it, `lui` (+`addiu`/`ori`) forms the table base,
+/// `addu` adds them and `lw` loads the target, all within the same short
+/// windows upstream searches. Anything else stays an unresolved jump.
+fn looks_like_resolvable_switch(words: &[u32], at: usize) -> bool {
+    let op = |w: u32| w >> 26;
+    let rs = |w: u32| (w >> 21) & 31;
+    let rt = |w: u32| (w >> 16) & 31;
+    let rd = |w: u32| (w >> 11) & 31;
+    let funct = |w: u32| w & 0x3f;
+    let target = rs(words[at]);
+    // lw / lwu into the jump register, up to 20 instructions back
+    let Some(lw) = (at.saturating_sub(20)..at)
+        .rev()
+        .find(|&i| matches!(op(words[i]), 0x23 | 0x27) && rt(words[i]) == target)
+    else {
+        return false;
+    };
+    let base = rs(words[lw]);
+    // addu base, tableBase, index within 10
+    let Some(addu) = (lw.saturating_sub(10)..lw)
+        .rev()
+        .find(|&i| op(words[i]) == 0 && funct(words[i]) == 0x21 && rd(words[i]) == base)
+    else {
+        return false;
+    };
+    let (tbl, idx) = (rs(words[addu]), rt(words[addu]));
+    // lui into either operand within 20
+    let has_lui = (addu.saturating_sub(20)..addu)
+        .rev()
+        .any(|i| op(words[i]) == 0x0f && (rt(words[i]) == tbl || rt(words[i]) == idx));
+    if !has_lui {
+        return false;
+    }
+    // sll scaling the unshifted index within 10 ...
+    let Some(sll) = (addu.saturating_sub(10)..addu)
+        .rev()
+        .find(|&i| op(words[i]) == 0 && funct(words[i]) == 0 && (rd(words[i]) == tbl || rd(words[i]) == idx))
+    else {
+        return false;
+    };
+    let unshifted = rt(words[sll]);
+    if unshifted == 0 {
+        return false;
+    }
+    // ... and a bound on it (sltiu/slti, 1..=1000 cases) within 30
+    (addu.saturating_sub(30)..addu).rev().any(|i| {
+        matches!(op(words[i]), 0x0a | 0x0b) && rs(words[i]) == unshifted && {
+            let n = words[i] & 0xffff;
+            n > 0 && n <= 1000
+        }
+    })
+}
+
+/// Scan every function for indirect calls and jumps (MIPS `jr`/`jalr`), the
+/// way upstream will: a `jr` that matches the switch idiom is resolved;
+/// any other `jr`, and every `jalr`, is not.
+pub fn indirect_profile(sections: &[engine::ElfSection], funcs: &[engine::FunctionEntry], little_endian: bool) -> IndirectProfile {
+    let mut p = IndirectProfile { functions: funcs.len(), ..Default::default() };
+    for f in funcs {
+        let Some(sec) = sections.iter().find(|s| s.address <= f.start && f.start < s.address.saturating_add(s.size)) else {
+            continue;
+        };
+        let end = f.end.min(sec.address.saturating_add(sec.size));
+        let mut words: Vec<u32> = Vec::new();
+        let mut a = f.start & !3;
+        while a.saturating_add(4) <= end {
+            let off = (a - sec.address) as usize;
+            let Some(b) = sec.data.get(off..off + 4) else { break };
+            words.push(if little_endian {
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+            } else {
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+            });
+            a += 4;
+        }
+        let n = words.len() as u64;
+        let (mut calls, mut jumps) = (false, false);
+        for (i, &w) in words.iter().enumerate() {
+            if w >> 26 != 0 {
+                continue;
+            }
+            let (funct, rs, rd) = (w & 0x3f, (w >> 21) & 31, (w >> 11) & 31);
+            let is_call = funct == 9 && rd == 31;
+            let is_jump = (funct == 8 && rs != 31) || (funct == 9 && rd != 31);
+            if !is_call && !is_jump {
+                continue;
+            }
+            if looks_like_resolvable_switch(&words, i) {
+                continue;
+            }
+            if is_call {
+                calls = true;
+            } else {
+                jumps = true;
+            }
+        }
+        p.instructions += n;
+        if calls {
+            p.functions_with_indirect_calls += 1;
+        }
+        if jumps {
+            p.functions_with_indirect_jumps += 1;
+        }
+        if calls || jumps {
+            p.fallback_entries_standard += n;
+        }
+        if jumps {
+            p.fallback_entries_lean += n;
+        }
+    }
+    p
 }
 
 /// Minimum gap between two progress callbacks within one stage.
@@ -685,6 +825,7 @@ pub fn ingest_ps2(
 
     let info = engine::parse_elf_data(&elf_bytes, &elf_file_name)?;
     let funcs = engine::detect_functions_inner(&info)?;
+    let indirect = indirect_profile(&info.sections, &funcs, info.is_little_endian);
     if funcs.is_empty() {
         warnings.push(
             "No functions were detected in the boot ELF (no executable segments?). \
@@ -795,6 +936,7 @@ pub fn ingest_ps2(
             "function_count": funcs.len(),
             "sdk_named": sdk_named,
             "stubs": stubbed,
+            "indirect_profile": indirect,
         },
         "next_steps": next_steps,
         "warnings": warnings,
@@ -824,6 +966,7 @@ pub fn ingest_ps2(
         extracted_bytes: summary.bytes,
         extract_mode: match opts.mode { ExtractMode::All => "all", ExtractMode::Executables => "executables" }.to_string(),
         stubbed,
+        indirect_profile: indirect,
         recompiler: recompiler_run,
         next_steps,
         warnings,

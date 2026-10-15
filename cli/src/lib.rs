@@ -72,3 +72,5 @@ mod tests_build;
 mod tests_ps1;
 #[cfg(test)]
 mod tests_ps1_build;
+#[cfg(test)]
+mod tests_lean;
