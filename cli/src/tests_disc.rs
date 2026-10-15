@@ -180,7 +180,7 @@ pub(crate) fn build_iso(volume_id: &str, root: &[(String, Node)]) -> Vec<u8> {
 
 /// Re-wrap a cooked image in raw CD sectors. Everything outside the 2048 data
 /// bytes is filled with 0xAA so a reader that mishandles offsets fails loudly.
-fn wrap_layout(cooked: &[u8], stride: usize, data_off: usize) -> Vec<u8> {
+pub(crate) fn wrap_layout(cooked: &[u8], stride: usize, data_off: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(cooked.len() / 2048 * stride);
     for (i, sec) in cooked.chunks(2048).enumerate() {
         let mut raw = vec![0xAAu8; stride];
@@ -568,8 +568,10 @@ mod robustness_tests {
         let mut b = b"MComprHD".to_vec();
         b.resize(4096, 0);
         std::fs::write(&chd, &b).unwrap();
+        // CHDs are read natively now; a file that only has the magic is a
+        // *corrupt* CHD and says so rather than asking for a conversion.
         let e = disc::open_disc_file(chd.to_str().unwrap()).err().unwrap();
-        assert!(e.contains("CHD") && e.contains("chdman"), "{e}");
+        assert!(e.contains("CHD"), "{e}");
 
         let cso = t.path().join("game.cso");
         let mut b = b"CISO".to_vec();
@@ -1030,6 +1032,29 @@ mod pipeline_tests {
             &files(&[("SYSTEM.CNF", b"BOOT = cdrom:\\SLUS_005.94;1\r\n"), ("SLUS_005.94", &exe)]),
         );
         let info = ps2_ingest::inspect_image(&write_image(&t, "ps1.iso", &ps1)).unwrap();
+        assert_eq!(info.platform, "PS1");
+        assert!(info.boot_is_psx_exe, "a PS-X EXE boot file makes a PS1 disc processable");
+        assert!(info.can_ingest);
+        assert!(!info.boot_is_ps2_elf);
+        // ...but the PS2 ingest still refuses it and points at the PS1 pipeline.
+        let e = ps2_ingest::ingest_ps2(
+            &write_image(&t, "ps1.iso", &ps1),
+            &ps2_ingest::IngestOptions {
+                out_root: t.path().join("out").to_string_lossy().to_string(),
+                mode: ps2_ingest::ExtractMode::Executables,
+                recompiler: None,
+            },
+            &mut |_| true,
+        )
+        .unwrap_err();
+        assert!(e.contains("ps1-ingest"), "{e}");
+
+        // a PS1 disc whose boot file is not a PS-X EXE cannot be built
+        let packed = build_iso(
+            "PS1_PACKED",
+            &files(&[("SYSTEM.CNF", b"BOOT = cdrom:\\SLUS_005.94;1\r\n"), ("SLUS_005.94", &[0x42u8; 4096])]),
+        );
+        let info = ps2_ingest::inspect_image(&write_image(&t, "packed.iso", &packed)).unwrap();
         assert_eq!(info.platform, "PS1");
         assert!(!info.can_ingest);
 

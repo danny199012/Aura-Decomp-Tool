@@ -32,6 +32,7 @@ import {
   type PackageResult,
 } from '../lib/ingest';
 import type { ViewId } from './Sidebar';
+import Ps1Flow from './Ps1Flow';
 
 type Step = 'pick' | 'review' | 'running' | 'done';
 
@@ -65,7 +66,7 @@ function writePref(key: string, value: string): void {
   }
 }
 
-const DISC_EXT = /\.(iso|bin|img|cue|mdf|nrg)$/i;
+const DISC_EXT = /\.(chd|cue|iso|bin|img|mdf|nrg)$/i;
 
 function StepBar({ step }: { step: Step }) {
   const idx = STEPS.findIndex((s) => s.id === step);
@@ -404,8 +405,9 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
         <div>
           <h1 className="text-2xl font-bold text-fg">One-click disc wizard</h1>
           <p className="mt-1 text-sm text-fg-secondary">
-            Point Aura at a PS2 disc image you own. It reads the disc, finds the boot executable, extracts what it
-            needs and writes a ready-to-run <Kbd>ps2_recomp</Kbd> project.
+            Point Aura at a PS1 or PS2 disc image you own. For PS2 it reads the disc, extracts what it needs and writes a
+            ready-to-run <Kbd>ps2_recomp</Kbd> project. For PS1 it prepares the disc and builds a native game with
+            PSXRecomp.
           </p>
         </div>
         <StepBar step={step} />
@@ -423,7 +425,7 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
             <div className="rounded-xl border-2 border-dashed border-app-border bg-app-panel-soft px-6 py-8 text-center">
               <div className="text-sm font-medium text-fg">Drop a disc image here</div>
               <div className="mt-1 text-xs text-fg-muted">
-                .iso, or .bin / .img / .mdf (raw 2352-byte sectors), or a .cue sheet
+                .chd, .iso, .cue sheet, or .bin / .img / .mdf (raw 2352-byte sectors)
               </div>
               <div className="mt-4">
                 <Button variant="primary" onClick={browseDisc} disabled={busy || !backend}>
@@ -434,7 +436,7 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
             <div className="flex gap-2">
               <input
                 className="flex-1 rounded-lg border border-app-border bg-app-panel-soft px-3 py-2 font-mono text-sm text-fg outline-none focus:border-accent"
-                placeholder="…or paste a path to an .iso / .cue"
+                placeholder="…or paste a path to a .chd / .iso / .cue"
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && void inspect(path)}
@@ -445,15 +447,19 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
             </div>
             {busy && <Spinner label="Reading the disc…" />}
             <Hint>
-              Compressed formats (CHD, CSO/ZSO, archives) must be converted to a plain .iso/.bin first. Your image is
-              only read, never modified.
+              CHD images are read directly. CSO/ZSO and archives must be converted to a plain .iso/.bin first. Your
+              image is only read, never modified.
             </Hint>
           </div>
         </Panel>
       )}
 
       {/* ---------------------------------------------------------------- 2 */}
-      {step === 'review' && info && (
+      {step === 'review' && info && info.platform === 'PS1' && (
+        <Ps1Flow info={info} path={path} onChooseAnother={reset} />
+      )}
+
+      {step === 'review' && info && info.platform !== 'PS1' && (
         <>
           <Panel
             title="2 · What Aura found"
@@ -494,11 +500,9 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
               {!info.can_ingest && (
                 <ErrorBox
                   message={
-                    info.platform === 'PS1'
-                      ? 'This is a PS1 disc. The one-click recomp pipeline targets PS2 for now; the disc itself reads fine, so you can still extract it from the command line (aura-cli disc-extract).'
-                      : info.platform === 'PS2'
-                        ? 'The boot executable could not be used (missing, packed or not a PS2 ELF). See the warnings above.'
-                        : 'This does not look like a PlayStation game disc (no BOOT2 entry in SYSTEM.CNF).'
+                    info.platform === 'PS2'
+                      ? 'The boot executable could not be used (missing, packed or not a PS2 ELF). See the warnings above.'
+                      : 'This does not look like a PlayStation game disc (no BOOT or BOOT2 entry in SYSTEM.CNF).'
                   }
                 />
               )}

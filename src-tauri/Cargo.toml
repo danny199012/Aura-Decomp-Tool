@@ -15,6 +15,10 @@ tauri-plugin-dialog = "2.0"
 # SHA-1 is required by the SCE SDK symbol matcher (ps2recomp computes a
 # SHA-1 over each candidate function body after masking out relocated words).
 sha1 = "0.10"
+# Pure-Rust CHD reader: the usual format of retro disc collections.
+chd = "0.3"
+# SHA-256 verifies the downloaded build toolchain against its published digest.
+sha2 = "0.10"
 # iced-x86 decodes/formats 32-bit x86 for the original Xbox (XBE) backend.
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 # mlua provides the Lua 5.4 scripting API (Tier 3). Vendored = no system Lua.
@@ -26,3 +30,18 @@ toml = "0.8"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
+
+# CHD images are decompressed on demand while browsing a disc; unoptimised
+# LZMA/zlib/FLAC makes that crawl in `cargo tauri dev`. Optimise just these.
+[profile.dev.package.chd]
+opt-level = 3
+[profile.dev.package.lzma-rs-perf-exp]
+opt-level = 3
+[profile.dev.package.claxon]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.ruzstd]
+opt-level = 3

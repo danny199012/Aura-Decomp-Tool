@@ -16,8 +16,12 @@
 //! | MODE2                          | 2336   | 8           | rare                |
 //! | raw + subchannel               | 2448   | 16 / 24     | rare                |
 //!
+//! CHD images (`chdman createcd`, the usual format of retro collections) are
+//! read directly through [`crate::chd_disc`]: the first data track is
+//! decompressed on demand and parsed like any `.bin`.
+//!
 //! Not supported (reported with an actionable message, never silently
-//! mis-read): CHD, CSO/ZSO and archives — convert to `.iso`/`.bin` first.
+//! mis-read): CSO/ZSO and archives — convert to `.iso`/`.bin` first.
 //!
 //! Pure Rust, no Tauri dependency, generic over `Read + Seek` so it can be
 //! unit-tested against in-memory images. Every length read from the image is
@@ -696,9 +700,16 @@ fn cue_files(cue_path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
+/// Anything a [`DiscImage`] can read from: a plain file, or a CHD data track.
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+/// The boxed source [`open_disc_file`] returns.
+pub type DiscSource = Box<dyn ReadSeek>;
+
 /// Open a disc image from disk. `.cue` sheets are followed to their data
-/// track. Returns the image plus the path that was actually opened.
-pub fn open_disc_file(path: &str) -> Result<(DiscImage<fs::File>, PathBuf), String> {
+/// track and `.chd` images are read through their first data track. Returns
+/// the image plus the path that was actually opened.
+pub fn open_disc_file(path: &str) -> Result<(DiscImage<DiscSource>, PathBuf), String> {
     let p = Path::new(path);
     let is_cue = p
         .extension()
@@ -712,10 +723,17 @@ pub fn open_disc_file(path: &str) -> Result<(DiscImage<fs::File>, PathBuf), Stri
             .map_err(|e| format!("Cannot open {}: {e}", cand.display()))?;
         let mut head = [0u8; 16];
         let n = f.read(&mut head).map_err(io_err)?;
-        if let Err(e) = check_unsupported_container(&head[..n], &cand.to_string_lossy()) {
-            return Err(e);
-        }
-        match DiscImage::open(f) {
+        let source: DiscSource = if crate::chd_disc::is_chd(&head[..n]) {
+            drop(f);
+            let (view, _info) = crate::chd_disc::open_data_track(&cand)?;
+            Box::new(view)
+        } else {
+            if let Err(e) = check_unsupported_container(&head[..n], &cand.to_string_lossy()) {
+                return Err(e);
+            }
+            Box::new(f)
+        };
+        match DiscImage::open(source) {
             Ok(img) => return Ok((img, cand)),
             Err(e) => {
                 first_err.get_or_insert(e);

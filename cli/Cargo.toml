@@ -14,6 +14,10 @@ description = "Command-line interface and shared analysis library for Aura Decom
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
+# Pure-Rust CHD reader: the usual format of retro disc collections.
+chd = "0.3"
+# SHA-256 verifies the downloaded build toolchain against its published digest.
+sha2 = "0.10"
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 
@@ -31,3 +35,17 @@ path = "src/main.rs"
 name = "aura-launch"
 path = "src/launch.rs"
 
+# CHD images are decompressed on demand while browsing a disc; unoptimised
+# LZMA/zlib/FLAC makes that crawl in `cargo tauri dev`. Optimise just these.
+[profile.dev.package.chd]
+opt-level = 3
+[profile.dev.package.lzma-rs-perf-exp]
+opt-level = 3
+[profile.dev.package.claxon]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.ruzstd]
+opt-level = 3

@@ -20,6 +20,7 @@
 
 use crate::disc::{self, DiscEntry, DiscImage, ExtractProgress};
 use crate::engine;
+use crate::psx_exe::{self, PsxExeInfo};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek};
@@ -163,6 +164,8 @@ struct DiscAnalysis {
     /// Index into the entries slice.
     boot_entry: Option<usize>,
     boot_is_ps2_elf: bool,
+    /// Parsed header when this is a PS1 disc whose boot file is a PS-X EXE.
+    psx_exe: Option<PsxExeInfo>,
     executables: Vec<ExecutableFile>,
     /// Entries (indices) whose first bytes are an ELF header.
     executable_idx: Vec<usize>,
@@ -180,6 +183,7 @@ fn analyze<R: Read + Seek>(img: &mut DiscImage<R>, entries: &[DiscEntry]) -> Dis
         cnf: None,
         boot_entry: None,
         boot_is_ps2_elf: false,
+        psx_exe: None,
         executables: vec![],
         executable_idx: vec![],
         warnings: vec![],
@@ -239,6 +243,16 @@ fn analyze<R: Read + Seek>(img: &mut DiscImage<R>, entries: &[DiscEntry]) -> Dis
                         ));
                     }
                 }
+                if a.platform == "PS1" {
+                    let head = img.read_file_head(&entries[i], psx_exe::HEADER_BYTES).unwrap_or_default();
+                    a.psx_exe = psx_exe::parse(&head);
+                    if a.psx_exe.is_none() {
+                        a.warnings.push(format!(
+                            "Boot file {} is not a PS-X EXE (no `PS-X EXE` header), so it cannot be recompiled directly.",
+                            entries[i].path
+                        ));
+                    }
+                }
             }
             None => a.warnings.push(format!(
                 "SYSTEM.CNF boots `{value}`, but no such file exists on the disc."
@@ -289,6 +303,10 @@ pub struct DiscInfo {
     pub boot_file: Option<String>,
     pub boot_size: u64,
     pub boot_is_ps2_elf: bool,
+    /// True when a PS1 disc's boot file is a PS-X EXE.
+    pub boot_is_psx_exe: bool,
+    /// Header fields of the PS-X EXE boot file (PS1 only).
+    pub psx_exe: Option<PsxExeInfo>,
     pub ver: Option<String>,
     pub vmode: Option<String>,
     pub file_count: usize,
@@ -299,7 +317,9 @@ pub struct DiscInfo {
     pub executables: Vec<ExecutableFile>,
     pub truncated: bool,
     pub warnings: Vec<String>,
-    /// True when [`ingest_ps2`] can run on this image.
+    /// True when the wizard can process this image: a PS2 disc with an ELF
+    /// boot file ([`ingest_ps2`]) or a PS1 disc with a PS-X EXE boot file
+    /// (`ps1_ingest`). `platform` says which pipeline applies.
     pub can_ingest: bool,
 }
 
@@ -323,10 +343,13 @@ pub fn inspect_image(path: &str) -> Result<DiscInfo, String> {
     let region = serial
         .as_deref()
         .map(region_from_serial)
+        .filter(|r| *r != "Unknown")
+        .or_else(|| a.psx_exe.as_ref().and_then(|p| p.marker_region()))
         .unwrap_or("Unknown")
         .to_string();
     let file_count = entries.iter().filter(|e| !e.is_dir).count();
-    let can_ingest = a.platform == "PS2" && a.boot_entry.is_some() && a.boot_is_ps2_elf;
+    let can_ingest = a.boot_entry.is_some()
+        && ((a.platform == "PS2" && a.boot_is_ps2_elf) || (a.platform == "PS1" && a.psx_exe.is_some()));
 
     Ok(DiscInfo {
         image_path: path.to_string(),
@@ -344,6 +367,8 @@ pub fn inspect_image(path: &str) -> Result<DiscInfo, String> {
         boot_size: a.boot_entry.map(|i| entries[i].size).unwrap_or(0),
         boot_file,
         boot_is_ps2_elf: a.boot_is_ps2_elf,
+        boot_is_psx_exe: a.psx_exe.is_some(),
+        psx_exe: a.psx_exe.clone(),
         ver: a.cnf.as_ref().and_then(|c| c.ver.clone()),
         vmode: a.cnf.as_ref().and_then(|c| c.vmode.clone()),
         file_count,
@@ -513,7 +538,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// change or completion always passes; otherwise at most one call per
 /// [`PROGRESS_INTERVAL`]. Once the consumer asks to cancel, every later call
 /// reports "cancelled" without invoking it again.
-struct Throttle<'a> {
+pub(crate) struct Throttle<'a> {
     cb: &'a mut dyn FnMut(&IngestProgress) -> bool,
     last_stage: String,
     last_at: Option<Instant>,
@@ -521,12 +546,12 @@ struct Throttle<'a> {
 }
 
 impl<'a> Throttle<'a> {
-    fn new(cb: &'a mut dyn FnMut(&IngestProgress) -> bool) -> Self {
+    pub(crate) fn new(cb: &'a mut dyn FnMut(&IngestProgress) -> bool) -> Self {
         Throttle { cb, last_stage: String::new(), last_at: None, cancelled: false }
     }
 
     /// Returns `false` once the consumer has asked to cancel.
-    fn call(&mut self, p: &IngestProgress) -> bool {
+    pub(crate) fn call(&mut self, p: &IngestProgress) -> bool {
         if self.cancelled {
             return false;
         }
@@ -548,7 +573,7 @@ impl<'a> Throttle<'a> {
     }
 }
 
-fn report(t: &mut Throttle, stage: &str, message: &str, fraction: f64) -> Result<(), String> {
+pub(crate) fn report(t: &mut Throttle, stage: &str, message: &str, fraction: f64) -> Result<(), String> {
     let p = IngestProgress {
         stage: stage.into(),
         message: message.into(),
@@ -576,8 +601,8 @@ pub fn ingest_ps2(
 
     if a.platform == "PS1" {
         return Err(
-            "This is a PS1 disc (SYSTEM.CNF uses BOOT=). The one-click recomp pipeline currently targets \
-             PS2. You can still unpack the disc with `aura-cli disc-extract`."
+            "This is a PS1 disc (SYSTEM.CNF uses BOOT=), which has its own pipeline: use `aura-cli ps1-ingest` \
+             (the wizard picks the right one automatically)."
                 .into(),
         );
     }

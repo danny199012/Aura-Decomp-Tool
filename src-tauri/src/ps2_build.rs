@@ -20,17 +20,15 @@
 //!
 //! Pure Rust (no Tauri), so the GUI, the CLI and the tests share it.
 
+use crate::build_common::Runner;
+pub use crate::build_common::{free_space_bytes, space_ok, BuildProgress, DownloadItem, ToolStatus};
 use crate::ps2_ingest;
 use crate::ps2_package::{self, PackageOptions, PackageResult};
 use serde::Serialize;
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 /// Upstream project the generated code is built against.
 pub const UPSTREAM_URL: &str = "https://github.com/ran-j/PS2Recomp.git";
@@ -40,22 +38,10 @@ pub const PINNED_COMMIT: &str = "eb8688b2fd191129f103a39543002c005b33409c";
 
 /// Upstream's default unity-build batch size for the runner target.
 const UNITY_BATCH: usize = 32;
-/// Lines of output kept for the UI.
-const TAIL_LINES: usize = 12;
-/// Minimum gap between two progress callbacks.
-const EMIT_INTERVAL: Duration = Duration::from_millis(150);
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolStatus {
-    pub name: String,
-    pub found: bool,
-    pub path: Option<String>,
-    pub detail: String,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Toolchain {
@@ -66,13 +52,6 @@ pub struct Toolchain {
     pub ready: bool,
     /// Human-readable list of what is missing and how to get it.
     pub problems: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DownloadItem {
-    pub what: String,
-    pub from: String,
-    pub approx_mb: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,18 +99,6 @@ pub struct BuildOptions {
     pub launcher_exe: Option<PathBuf>,
     /// Skip the Visual Studio / OS check (tests with a fake cmake).
     pub skip_compiler_check: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct BuildProgress {
-    /// `toolchain` | `source` | `recompiler-build` | `recompile` |
-    /// `runtime-configure` | `runtime-build` | `package` | `done`
-    pub stage: String,
-    pub message: String,
-    /// Overall completion in `0.0..=1.0`.
-    pub fraction: f64,
-    pub elapsed_secs: f64,
-    pub log_tail: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -386,42 +353,6 @@ fn search_from(opts: &BuildOptions) -> ToolSearch {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Disk space
-// ---------------------------------------------------------------------------
-
-/// Free bytes on the volume holding `path` (or its nearest existing parent).
-/// `None` when it cannot be determined (non-Windows).
-pub fn free_space_bytes(path: &Path) -> Option<u64> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        extern "system" {
-            fn GetDiskFreeSpaceExW(dir: *const u16, avail: *mut u64, total: *mut u64, free: *mut u64) -> i32;
-        }
-        let mut p = path.to_path_buf();
-        while !p.exists() {
-            if !p.pop() {
-                return None;
-            }
-        }
-        let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
-        let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
-        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free) };
-        (ok != 0).then_some(avail)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        None
-    }
-}
-
-/// Pure check used by the planner (and tested): is `free` enough for `required`?
-pub fn space_ok(free: Option<u64>, required: u64) -> bool {
-    free.map(|f| f >= required).unwrap_or(true)
-}
-
 fn dir_stats(dir: &Path) -> (usize, u64) {
     let mut n = 0usize;
     let mut bytes = 0u64;
@@ -640,215 +571,6 @@ pub fn is_unity_line(line: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Process runner with live output, progress and cancellation
-// ---------------------------------------------------------------------------
-
-struct Runner<'a> {
-    cb: &'a mut dyn FnMut(&BuildProgress) -> bool,
-    started: Instant,
-    last_emit: Option<Instant>,
-    tail: VecDeque<String>,
-    log: Option<fs::File>,
-    cancelled: bool,
-    stage: String,
-    message: String,
-    fraction: f64,
-    stage_started: Instant,
-    stage_secs: Vec<(String, f64)>,
-    /// `(from, to, expected_secs)`: while a long compile prints nothing (its
-    /// output is block-buffered through the pipe) creep from `from` towards
-    /// `to` over `expected_secs`, so the bar does not sit still.
-    creep: Option<(f64, f64, f64)>,
-}
-
-impl<'a> Runner<'a> {
-    fn new(cb: &'a mut dyn FnMut(&BuildProgress) -> bool, log: Option<fs::File>) -> Self {
-        Runner {
-            cb,
-            started: Instant::now(),
-            last_emit: None,
-            tail: VecDeque::new(),
-            log,
-            cancelled: false,
-            stage: String::new(),
-            message: String::new(),
-            fraction: 0.0,
-            stage_started: Instant::now(),
-            stage_secs: vec![],
-            creep: None,
-        }
-    }
-
-    fn snapshot(&self) -> BuildProgress {
-        let mut fraction = self.fraction;
-        if let Some((from, to, expected)) = self.creep {
-            let t = (self.stage_started.elapsed().as_secs_f64() / expected.max(1.0)).min(0.97);
-            fraction = fraction.max(from + (to - from) * t);
-        }
-        BuildProgress {
-            stage: self.stage.clone(),
-            message: self.message.clone(),
-            fraction: fraction.clamp(0.0, 1.0),
-            elapsed_secs: self.started.elapsed().as_secs_f64(),
-            log_tail: self.tail.iter().cloned().collect(),
-        }
-    }
-
-    /// Report progress; throttled unless `force`. Returns `false` once cancelled.
-    fn emit(&mut self, force: bool) -> bool {
-        if self.cancelled {
-            return false;
-        }
-        let due = force || self.last_emit.map_or(true, |t| t.elapsed() >= EMIT_INTERVAL);
-        if due {
-            self.last_emit = Some(Instant::now());
-            let snap = self.snapshot();
-            if !(self.cb)(&snap) {
-                self.cancelled = true;
-                return false;
-            }
-        }
-        true
-    }
-
-    fn stage(&mut self, stage: &str, message: &str, fraction: f64) -> Result<(), String> {
-        if !self.stage.is_empty() && self.stage != stage {
-            self.stage_secs.push((self.stage.clone(), self.stage_started.elapsed().as_secs_f64()));
-            self.stage_started = Instant::now();
-        }
-        self.stage = stage.to_string();
-        self.message = message.to_string();
-        self.fraction = fraction;
-        self.creep = None;
-        if self.emit(true) { Ok(()) } else { Err("Cancelled".into()) }
-    }
-
-    fn finish_stage(&mut self) {
-        if !self.stage.is_empty() {
-            self.stage_secs.push((self.stage.clone(), self.stage_started.elapsed().as_secs_f64()));
-            self.stage_started = Instant::now();
-        }
-    }
-
-    fn push_line(&mut self, line: &str) {
-        if let Some(f) = self.log.as_mut() {
-            let _ = writeln!(f, "{line}");
-        }
-        if !line.trim().is_empty() {
-            self.tail.push_back(line.trim_end().to_string());
-            while self.tail.len() > TAIL_LINES {
-                self.tail.pop_front();
-            }
-        }
-    }
-
-    /// Run `program args` with live output. `on_line` may return a new
-    /// overall progress fraction.
-    fn run(
-        &mut self,
-        label: &str,
-        program: &Path,
-        args: &[OsString],
-        cwd: Option<&Path>,
-        mut on_line: impl FnMut(&str) -> Option<f64>,
-    ) -> Result<(), String> {
-        self.push_line(&format!("$ {} {}", program.display(), args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ")));
-        let mut cmd = Command::new(program);
-        cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        if let Some(c) = cwd {
-            cmd.current_dir(c);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let mut child = cmd.spawn().map_err(|e| format!("Could not start {label} ({}): {e}", program.display()))?;
-
-        let (tx, rx) = mpsc::channel::<String>();
-        let mut readers = vec![];
-        for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-                     child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>)]
-            .into_iter()
-            .flatten()
-        {
-            let tx = tx.clone();
-            readers.push(std::thread::spawn(move || {
-                let mut r = BufReader::new(pipe);
-                let mut buf = Vec::new();
-                loop {
-                    buf.clear();
-                    match r.read_until(b'\n', &mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
-                            if tx.send(line).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }));
-        }
-        drop(tx);
-
-        let mut killed = false;
-        loop {
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) => {
-                    self.push_line(&line);
-                    if let Some(f) = on_line(&line) {
-                        self.fraction = f;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-            if !self.emit(false) && !killed {
-                killed = true;
-                kill_tree(child.id());
-                let _ = child.kill();
-            }
-        }
-        for r in readers {
-            let _ = r.join();
-        }
-        let status = child.wait().map_err(|e| format!("Waiting for {label} failed: {e}"))?;
-        if killed || self.cancelled {
-            return Err("Cancelled".into());
-        }
-        if !status.success() {
-            let tail: Vec<String> = self.tail.iter().cloned().collect();
-            return Err(format!(
-                "{label} failed ({status}). Last output:\n{}",
-                tail.join("\n")
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Kill a process and everything it started (CMake spawns MSBuild which spawns
-/// compiler processes; killing only the parent leaves workers running).
-fn kill_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(0x0800_0000)
-            .status();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = Command::new("pkill").args(["-TERM", "-P", &pid.to_string()]).status();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
@@ -913,26 +635,7 @@ fn ensure_source(r: &mut Runner, git: &Path, dir: &Path) -> Result<(), String> {
     if source_is_pinned(dir) {
         return Ok(());
     }
-    fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
-    let d = dir.as_os_str().to_os_string();
-    let g = |extra: &[&str]| -> Vec<OsString> {
-        let mut v = vec![s("-C"), d.clone()];
-        v.extend(extra.iter().map(|x| s(x)));
-        v
-    };
-    if !dir.join(".git").exists() {
-        r.run("git init", git, &g(&["init", "-q"]), None, |_| None)?;
-        r.run("git remote", git, &g(&["remote", "add", "origin", UPSTREAM_URL]), None, |_| None)?;
-    }
-    // GitHub allows fetching a specific commit shallowly; fall back to a
-    // fuller fetch if a mirror refuses.
-    let shallow = r.run("git fetch", git, &g(&["fetch", "--depth", "1", "origin", PINNED_COMMIT]), None, |_| None);
-    if shallow.is_err() {
-        r.run("git fetch", git, &g(&["fetch", "origin"]), None, |_| None)?;
-        r.run("git checkout", git, &g(&["checkout", "-q", "--detach", PINNED_COMMIT]), None, |_| None)?;
-    } else {
-        r.run("git checkout", git, &g(&["checkout", "-q", "--detach", "FETCH_HEAD"]), None, |_| None)?;
-    }
+    crate::build_common::ensure_git_checkout(r, git, dir, UPSTREAM_URL, PINNED_COMMIT)?;
     if !source_is_pinned(dir) {
         return Err(format!("The upstream checkout in {} is not at the expected commit {PINNED_COMMIT}.", dir.display()));
     }

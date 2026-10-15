@@ -44,6 +44,16 @@ pub use engine::*;
 #[path = "../../src-tauri/src/decomp_export.rs"] pub mod decomp_export;
 #[path = "../../src-tauri/src/ps1_symbols.rs"] pub mod ps1_symbols;
 #[path = "../../src-tauri/src/nid_db.rs"] pub mod nid_db;
+#[path = "../../src-tauri/src/build_common.rs"]
+pub mod build_common;
+#[path = "../../src-tauri/src/chd_disc.rs"]
+pub mod chd_disc;
+#[path = "../../src-tauri/src/psx_exe.rs"]
+pub mod psx_exe;
+#[path = "../../src-tauri/src/ps1_build.rs"]
+pub mod ps1_build;
+#[path = "../../src-tauri/src/ps1_ingest.rs"]
+pub mod ps1_ingest;
 #[path = "../../src-tauri/src/disc.rs"] pub mod disc;
 #[path = "../../src-tauri/src/ps2_ingest.rs"] pub mod ps2_ingest;
 #[path = "../../src-tauri/src/launcher_core.rs"] pub mod launcher_core;
@@ -58,3 +68,7 @@ mod tests_disc;
 mod tests_package;
 #[cfg(test)]
 mod tests_build;
+#[cfg(test)]
+mod tests_ps1;
+#[cfg(test)]
+mod tests_ps1_build;

@@ -112,7 +112,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps1-ingest      PS1 disc image (.chd/.cue/.bin/.iso) -> workspace with a cue/bin PSXRecomp can build (--out DIR)\n  ps1-build       One-click: build a PS1 workspace into a native game with PSXRecomp (--plan, --yes)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -968,8 +968,16 @@ fn cmd_disc_info(a: &Args) -> Result<String, String> {
         t.push_str(&format!("Boot:         {k} = {v}\n"));
     }
     if let Some(f) = &info.boot_file {
-        t.push_str(&format!("Boot file:    {f} ({}, {})\n", fmt_size(info.boot_size),
-            if info.boot_is_ps2_elf { "valid PS2 ELF" } else { "not a PS2 ELF" }));
+        let kind = match (&info.psx_exe, info.boot_is_ps2_elf) {
+            (Some(p), _) => format!(
+                "valid PS-X EXE, loads at 0x{:08X}, starts at 0x{:08X}",
+                p.load_addr, p.entry_pc
+            ),
+            (None, true) => "valid PS2 ELF".to_string(),
+            (None, false) if info.platform == "PS1" => "not a PS-X EXE".to_string(),
+            (None, false) => "not a PS2 ELF".to_string(),
+        };
+        t.push_str(&format!("Boot file:    {f} ({}, {kind})\n", fmt_size(info.boot_size)));
     }
     if let Some(v) = &info.vmode { t.push_str(&format!("Video mode:   {v}\n")); }
     t.push_str(&format!("Files:        {} in {} directories, {}\n", info.file_count, info.dir_count, fmt_size(info.total_bytes)));
@@ -1043,6 +1051,100 @@ fn cmd_ps2_ingest(a: &Args) -> Result<String, String> {
     for w in &res.warnings { t.push_str(&format!("warning: {w}\n")); }
     t.push_str("\nNext steps:\n");
     for (i, s) in res.next_steps.iter().enumerate() { t.push_str(&format!("  {}. {s}\n", i + 1)); }
+    Ok(t)
+}
+
+fn cmd_ps1_ingest(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("ps1-ingest needs a disc image path (.chd, .cue, .bin or .iso)")?;
+    let out = a.out.clone().ok_or("ps1-ingest needs --out DIR")?;
+    let opts = ps1_ingest::Ps1IngestOptions { out_root: out };
+    let mut last_stage = String::new();
+    let res = ps1_ingest::ingest_ps1(file, &opts, &mut |p| {
+        if !a.json && p.stage != last_stage {
+            last_stage = p.stage.clone();
+            eprintln!("[{:>3}%] {}", (p.fraction * 100.0) as u32, p.message);
+        }
+        true
+    })?;
+    if a.json { return Ok(serde_json::to_string_pretty(&res).unwrap_or_default()); }
+    let mut t = String::new();
+    t.push_str(&format!("{} [{}] — {}\n", res.display_name, res.serial.clone().unwrap_or_else(|| "no serial".into()), res.region));
+    t.push_str(&format!("Workspace:    {}\n", res.workspace));
+    t.push_str(&format!(
+        "Boot file:    {} (PS-X EXE, loads at 0x{:08X}, starts at 0x{:08X})\n",
+        res.boot_file, res.psx_exe.load_addr, res.psx_exe.entry_pc
+    ));
+    t.push_str(&format!("Disc sheet:   {} ({}, {})\n", res.cue_path, res.source_kind, fmt_size(res.source_bytes)));
+    for w in &res.warnings { t.push_str(&format!("warning: {w}\n")); }
+    t.push_str("\nNext steps:\n");
+    for (i, s) in res.next_steps.iter().enumerate() { t.push_str(&format!("  {}. {s}\n", i + 1)); }
+    Ok(t)
+}
+
+fn cmd_ps1_build(a: &Args) -> Result<String, String> {
+    let ws = a.file.as_ref().ok_or("ps1-build needs a workspace folder (the one `ps1-ingest` wrote)")?;
+    let opts = ps1_build::Ps1BuildOptions {
+        cache_dir: a.cache.as_ref().map(std::path::PathBuf::from),
+        allow_downloads: a.yes,
+        package: !a.no_package,
+        jobs: a.jobs,
+        ..Default::default()
+    };
+    let plan = ps1_build::plan_build(std::path::Path::new(ws), &opts)?;
+    let tc = &plan.toolchain;
+    let mark = |t: &build_common::ToolStatus| if t.found { "ok" } else { "MISSING" };
+
+    let mut head = String::new();
+    head.push_str(&format!("Game:           {}{}\n", plan.display_name, plan.serial.as_ref().map(|s| format!(" [{s}]")).unwrap_or_default()));
+    head.push_str(&format!("Cache folder:   {}\n", plan.cache_dir));
+    head.push_str(&format!(
+        "Tools:          git {} | Python {} | PowerShell {} | bash {}\n",
+        mark(&tc.git), mark(&tc.python), mark(&tc.powershell), mark(&tc.bash)
+    ));
+    head.push_str(&format!(
+        "Build tools:    {} ({})\n",
+        if tc.build_tools.found { "ok" } else { "will be downloaded" },
+        tc.build_tools.detail
+    ));
+    head.push_str(&format!("Estimate:       {} on {} cores\n", ps1_build::describe_estimate(plan.estimate_secs), plan.cores));
+    if let Some(f) = plan.free_bytes {
+        head.push_str(&format!("Disk:           {} free, about {} needed\n", fmt_size(f), fmt_size(plan.required_bytes)));
+    }
+    head.push_str(&format!("Downloads:      about {} MB\n", plan.download_mb));
+    for d in &plan.downloads {
+        head.push_str(&format!("                - {} (~{} MB)\n", d.what, d.approx_mb));
+    }
+    for b in &plan.blockers {
+        head.push_str(&format!("BLOCKER: {b}\n"));
+    }
+    if a.plan {
+        if a.json { return Ok(serde_json::to_string_pretty(&plan).unwrap_or_default()); }
+        return Ok(head);
+    }
+    if !a.json { eprintln!("{head}"); }
+
+    let mut last_stage = String::new();
+    let mut last_print = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    let res = ps1_build::build_game(std::path::Path::new(ws), &opts, &mut |p| {
+        if !a.json && (p.stage != last_stage || last_print.elapsed() >= std::time::Duration::from_secs(5)) {
+            last_stage = p.stage.clone();
+            last_print = std::time::Instant::now();
+            eprintln!("[{:>3}%] {:>6.0}s  {}  {}", (p.fraction * 100.0) as u32, p.elapsed_secs, p.stage, p.message);
+        }
+        true
+    })?;
+    if a.json { return Ok(serde_json::to_string_pretty(&res).unwrap_or_default()); }
+    let mut t = String::new();
+    t.push_str(&format!("Built:        {}\n", res.exe));
+    t.push_str(&format!("Project:      {}\n", res.project_dir));
+    t.push_str(&format!("Build log:    {}\n", res.log_path));
+    t.push_str(&format!("Took:         {:.0}s\n", res.elapsed_secs));
+    for (stage, secs) in &res.stage_secs { t.push_str(&format!("              {stage:<18} {secs:>6.0}s\n")); }
+    if let Some(p) = &res.package {
+        t.push_str(&format!("Game folder:  {} ({} files, {})\n", p.package_dir, p.files, fmt_size(p.bytes)));
+        t.push_str(&format!("Play:         \"{}\" --disc \"{}\"\n", p.exe, res.source_image));
+    }
+    for w in &res.warnings { t.push_str(&format!("warning: {w}\n")); }
     Ok(t)
 }
 
@@ -1191,6 +1293,8 @@ fn run(argv: &[String]) -> Result<i32, String> {
         // rather than letting `emit` try to overwrite the directory.
         "disc-extract" => cmd_disc_extract(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-ingest" => cmd_ps2_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "ps1-ingest" => cmd_ps1_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "ps1-build" => cmd_ps1_build(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-package" => cmd_ps2_package(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "ps2-build" => cmd_ps2_build(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         cmd => Err(format!("Unknown command: {cmd}. Try --help")),

@@ -14,6 +14,16 @@ export interface ExecutableFile {
   kind: string;
 }
 
+/** Header fields of a PS1 boot executable (PS-X EXE). */
+export interface PsxExeInfo {
+  entry_pc: number;
+  gp: number;
+  load_addr: number;
+  text_size: number;
+  initial_sp: number;
+  region_marker: string;
+}
+
 export interface DiscInfo {
   image_path: string;
   opened_path: string;
@@ -30,6 +40,9 @@ export interface DiscInfo {
   boot_file: string | null;
   boot_size: number;
   boot_is_ps2_elf: boolean;
+  /** PS1 discs: the boot file is a PS-X EXE. */
+  boot_is_psx_exe: boolean;
+  psx_exe: PsxExeInfo | null;
   ver: string | null;
   vmode: string | null;
   file_count: number;
@@ -286,3 +299,94 @@ export async function onBuildProgress(cb: (p: BuildProgress) => void): Promise<U
   if (!isBackendAvailable()) return () => {};
   return listen<BuildProgress>('build-progress', (e) => cb(e.payload));
 }
+
+// ---------------------------------------------------------------------------
+// PS1: disc -> workspace (cue/bin) -> PSXRecomp build -> game folder
+// ---------------------------------------------------------------------------
+
+export interface Ps1IngestResult {
+  workspace: string;
+  manifest_path: string;
+  display_name: string;
+  /** Readable title taken from the file name. */
+  title: string;
+  serial: string | null;
+  region: string;
+  platform: string;
+  boot_file: string;
+  psx_exe: PsxExeInfo;
+  source_image: string;
+  cue_path: string;
+  /** "original" | "decompressed" | "generated" | "reused" */
+  source_kind: string;
+  source_bytes: number;
+  disc_number: number | null;
+  next_steps: string[];
+  warnings: string[];
+}
+
+export interface Ps1Toolchain {
+  supported_os: boolean;
+  git: ToolStatus;
+  python: ToolStatus;
+  powershell: ToolStatus;
+  bash: ToolStatus;
+  build_tools: ToolStatus;
+  /** "env" | "cache" | "system" | "missing" */
+  build_tools_source: string;
+  toolchain_dir: string | null;
+  ready_apart_from_build_tools: boolean;
+  problems: string[];
+}
+
+export interface Ps1BuildPlan {
+  toolchain: Ps1Toolchain;
+  cache_dir: string;
+  display_name: string;
+  serial: string | null;
+  cue_path: string;
+  downloads: DownloadItem[];
+  download_mb: number;
+  framework_cached: boolean;
+  toolchain_cached: boolean;
+  estimate_secs: number;
+  cores: number;
+  free_bytes: number | null;
+  required_bytes: number;
+  blockers: string[];
+  can_build: boolean;
+  pinned_commit: string;
+  project_dir: string;
+}
+
+export interface Ps1Package {
+  package_dir: string;
+  exe: string;
+  files: number;
+  bytes: number;
+}
+
+export interface Ps1BuildResult {
+  exe: string;
+  project_dir: string;
+  build_dir: string;
+  cache_dir: string;
+  log_path: string;
+  /** The user's own disc image, to hand to the game (`--disc`). */
+  source_image: string;
+  elapsed_secs: number;
+  stage_secs: [string, number][];
+  package: Ps1Package | null;
+  warnings: string[];
+}
+
+export const runPs1Ingest = (path: string, outRoot: string) =>
+  call<Ps1IngestResult>('ps1_ingest_run', { path, outRoot });
+
+export const planPs1Build = (workspace: string, cacheDir: string | null) =>
+  call<Ps1BuildPlan>('plan_ps1_build', { workspace, cacheDir });
+
+export const buildPs1Game = (workspace: string, cacheDir: string | null, allowDownloads: boolean) =>
+  call<Ps1BuildResult>('build_ps1_game', { workspace, cacheDir, allowDownloads });
+
+export const playPs1Game = (exe: string, disc: string | null) => call<void>('play_ps1_game', { exe, disc });

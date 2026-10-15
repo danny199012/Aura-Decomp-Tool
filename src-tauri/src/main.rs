@@ -21,7 +21,12 @@ mod call_graph;
 mod cfg;
 mod decomp;
 mod decomp_export;
+mod build_common;
+mod chd_disc;
 mod disc;
+mod ps1_build;
+mod ps1_ingest;
+mod psx_exe;
 mod ps2_ingest;
 mod ps2_package;
 mod ps2_build;
@@ -1099,7 +1104,7 @@ async fn pick_disc_image(app: tauri::AppHandle, window: tauri::WebviewWindow) ->
         app.dialog()
             .file()
             .set_parent(&window)
-            .add_filter("Disc images", &["iso", "bin", "img", "cue", "mdf", "nrg"])
+            .add_filter("Disc images", &["chd", "cue", "iso", "bin", "img", "mdf", "nrg"])
             .add_filter("All Files", &["*"])
             .blocking_pick_file()
             .map(|p| p.to_string())
@@ -1228,6 +1233,97 @@ async fn build_ps2_game(
     joined.map_err(|e| format!("Build task failed: {e}"))?
 }
 
+/// PS1: prepare a workspace for a disc image — decompress a CHD (or pair a bare
+/// image with a sheet) into the `.cue` PSXRecomp needs, and write the manifest.
+/// Emits `ingest-progress` events; shares the busy/cancel flags.
+#[tauri::command]
+async fn ps1_ingest_run(
+    app: tauri::AppHandle,
+    path: String,
+    out_root: String,
+) -> Result<ps1_ingest::Ps1IngestResult, String> {
+    if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("An ingest is already running.".into());
+    }
+    INGEST_CANCEL.store(false, Ordering::SeqCst);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps1_ingest::Ps1IngestOptions { out_root };
+        ps1_ingest::ingest_ps1(&path, &opts, &mut |p| {
+            let _ = app.emit("ingest-progress", p);
+            !INGEST_CANCEL.load(Ordering::SeqCst)
+        })
+    })
+    .await;
+    INGEST_RUNNING.store(false, Ordering::SeqCst);
+    joined.map_err(|e| format!("Ingest task failed: {e}"))?
+}
+
+/// PS1: describe a one-click build (tools, downloads, disk, estimate) without
+/// doing any of it. The UI shows this and asks for consent before downloading.
+#[tauri::command]
+async fn plan_ps1_build(workspace: String, cache_dir: Option<String>) -> Result<ps1_build::Ps1BuildPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps1_build::Ps1BuildOptions {
+            cache_dir: cache_dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from),
+            ..Default::default()
+        };
+        ps1_build::plan_build(Path::new(&workspace), &opts)
+    })
+    .await
+    .map_err(|e| format!("Plan task failed: {e}"))?
+}
+
+/// PS1: run the one-click build (toolchain, PSXRecomp setup, generate, compile,
+/// package). Emits `build-progress` events; shares the busy/cancel flags.
+#[tauri::command]
+async fn build_ps1_game(
+    app: tauri::AppHandle,
+    workspace: String,
+    cache_dir: Option<String>,
+    allow_downloads: bool,
+) -> Result<ps1_build::Ps1BuildResult, String> {
+    if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("Another job is already running.".into());
+    }
+    INGEST_CANCEL.store(false, Ordering::SeqCst);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps1_build::Ps1BuildOptions {
+            cache_dir: cache_dir.filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from),
+            allow_downloads,
+            package: true,
+            ..Default::default()
+        };
+        ps1_build::build_game(Path::new(&workspace), &opts, &mut |p| {
+            let _ = app.emit("build-progress", p);
+            !INGEST_CANCEL.load(Ordering::SeqCst)
+        })
+    })
+    .await;
+    INGEST_RUNNING.store(false, Ordering::SeqCst);
+    joined.map_err(|e| format!("Build task failed: {e}"))?
+}
+
+/// Start a packaged PS1 game. Only a program that sits in a folder Aura packaged
+/// (it carries `aura-package.json` naming that exact file) is accepted, so the
+/// webview cannot use this to run arbitrary programs.
+#[tauri::command]
+fn play_ps1_game(exe: String, disc: Option<String>) -> Result<(), String> {
+    let p = Path::new(&exe);
+    let dir = p.parent().ok_or("Invalid program path")?;
+    if !p.is_file() || !ps1_build::is_aura_package_exe(p) {
+        return Err("That is not an Aura game package.".into());
+    }
+    let mut cmd = std::process::Command::new(p);
+    // The game reads the player's own image directly (.chd, .cue or .iso).
+    if let Some(d) = disc.filter(|d| Path::new(d).is_file()) {
+        cmd.arg("--disc").arg(d);
+    }
+    cmd.current_dir(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not start the game: {e}"))
+}
+
 /// Native picker for the built runtime executable. `None` if cancelled.
 #[tauri::command]
 async fn pick_runtime_exe(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<Option<String>, String> {
@@ -1339,6 +1435,10 @@ async fn main() {
             pick_runtime_exe,
             find_aura_launcher,
             play_packaged_game,
+            ps1_ingest_run,
+            plan_ps1_build,
+            build_ps1_game,
+            play_ps1_game,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");

@@ -197,6 +197,22 @@ Compiles an ingested workspace into a game executable and packages it, so the wi
 - **Cancel** kills the whole process tree (CMake spawns MSBuild which spawns compilers). **Progress** is driven by the compile's batch lines, with a time-based creep because MSBuild's output is block-buffered through the pipe.
 - **Honest status** — a successful build means the game's code compiled and starts. The upstream runtime is experimental; built games open and draw but are not playable yet (see *Double-Click Game Folder*). Windows (MSVC) only for now.
 
+### One-Click Build (PS1)
+Point the wizard (or `aura-cli ps1-ingest` / `ps1-build`) at a PS1 disc image and Aura drives [PSXRecomp](https://github.com/RetroPortingToolKit/psxrecomp) — a general-purpose PS1 static recompiler — end to end. The result is a native Windows program whose launcher asks for your disc the first time it starts.
+- **Reads what collections actually contain** — `.chd` (every codec `chdman createcd` writes: LZMA, zlib, FLAC, zstd), `.cue/.bin`, and bare `.iso/.bin`. CHDs are decompressed on demand by a pure-Rust reader; nothing is converted by hand. The image is only ever read.
+- **Recognises PS1 discs properly** — `SYSTEM.CNF` `BOOT =`, the boot **PS-X EXE** header (load address, entry point, licence marker), serial and region (falling back to the licence marker when the boot file has no serial), multi-disc names, truncated dumps.
+- **`ps1-ingest`** writes `<out>/<SERIAL>/{source/, game.json}`. PSXRecomp's project setup only accepts a `.cue`, so a CHD's data track is decompressed to a `.cue`+`.bin` pair in `source/` (a `.cue` you pass is used in place; a bare image gets a generated sheet). Re-running reuses an up-to-date export.
+- **`ps1-build`** — `--plan` lists exactly what a build would download and does nothing; `--yes` agrees to it. It detects git, Windows Python, PowerShell and Git's bash, then:
+  1. downloads the authors' portable CMake + Ninja + clang bundle (~209 MB) **only if no toolchain is found**, and verifies its published SHA-256 before using it;
+  2. fetches the pinned framework commit and the launcher sources into a cache;
+  3. runs PSXRecomp's own setup script non-interactively — answering every prompt, with GitHub, CI, netplay and boxart switched off;
+  4. gathers the built program (+ DLLs, BIOS) into `<workspace>/package` with a README.
+- **Things the driver works around** (each found by running it for real): Windows PowerShell 5.1 silently drops empty arguments (the script forwards `--description ""` to a Python tool, which then fails), so metadata is always non-empty; a default Git for Windows (`core.autocrlf=true`) prints a warning per generated file and the script's `git add … 2>$null` then never returns under PowerShell 5.1, so CRLF handling is switched off for the run; `MSYS_NO_PATHCONV` in the environment would break Git-bash path conversion, so it is removed; Git's `bash` is put ahead of any other `bash` on `PATH`.
+- **Measured** — Mega Man X4 (USA, 1.18 MB boot program) from its `.chd` on a 20-core machine with a warm toolchain: **203 s** end to end (code generation ~70 s → 148 shards, 8.1M lines of C, 8,984 dispatch entries; compile ~130 s), a 95 MB / 395-file game folder. Started with `--disc` pointing at the original `.chd`, the game's launcher opened, and after *Play* the native window ran at 60 Hz and rendered the game's intro. Not yet verified: playing past the intro, audio, and any other title — PSXRecomp itself says validation varies by game.
+- **Cache** — `%LOCALAPPDATA%\AuraDecompTool\psxrecomp` (override with `--cache DIR` or `AURA_PS1_BUILD_CACHE`). Cancelling kills the whole process tree.
+- **Licence note** — PSXRecomp is PolyForm Noncommercial 1.0.0. Aura fetches it at your request and never bundles it. The generated program contains code translated from your disc: keep it to yourself.
+- **Also relevant: PsyCross** ([OpenDriver2](https://github.com/OpenDriver2/PsyCross), MIT; [SlickAmogus fork](https://github.com/SlickAmogus/PsyCross) tuned for Silent Hill) reimplements the PSY-Q SDK so a game's *decompiled source* can be built for PC. It is not part of this disc-to-exe pipeline, which has no source; it would suit a future "build a matching decompilation" backend.
+
 ### Interactive Call Graph
 - **D3.js-ready data** — Produces a JSON-serializable graph (nodes + edges) optimized for force-directed visualization in the web UI. Each node carries function name, address, size, library attribution, call count, called-by count, and entry-point/external flags. Each edge carries source/target IDs, callsite address, and call kind (jal/jump).
 - **Graph statistics** — Includes summary stats: total/named/external function counts, total edges, max call depth (BFS from entry point), detected libraries, and top-20 hub functions (ranked by call + called-by score).
@@ -356,6 +372,11 @@ Aura-Decomp-Tool/
 │   │   ├── disc.rs           # streaming ISO9660 disc-image reader + extractor
 │   │   ├── ps2_package.rs    # double-click game folder: exe + disc tree + launcher
 │   │   ├── ps2_build.rs      # one-click build: toolchain, pinned upstream, recompile, runtime exe
+│   │   ├── build_common.rs   # shared process runner (progress, cancel, tree-kill), pinned git checkout
+│   │   ├── chd_disc.rs       # CHD reader: first data track as a sector stream, cue/bin export
+│   │   ├── psx_exe.rs        # PS-X EXE header parsing
+│   │   ├── ps1_ingest.rs     # PS1 disc -> workspace (cue/bin + manifest)
+│   │   ├── ps1_build.rs      # PSXRecomp driver: toolchain, setup script, packaging
 │   │   ├── launcher_core.rs  # shared by the aura-launch binary (cli/src/launch.rs)
 │   │   ├── ps2_ingest.rs     # PS2 disc -> boot ELF -> ps2_recomp project pipeline
 │   │   ├── lzx.rs            # pure-Rust LZX decompressor (Xbox 360 XEX)
@@ -454,8 +475,11 @@ aura-cli ps2-ingest game.iso --out ./games --recompiler /path/to/ps2_recomp
 aura-cli ps2-package ./games/SLUS-20312 --exe /path/to/built/ps2EntryRunner.exe   # -> ./games/SLUS-20312/package
 aura-cli ps2-build ./games/SLUS-20312 --plan                                     # what a build would download/do
 aura-cli ps2-build ./games/SLUS-20312 --yes                                      # one click: compile + package
+aura-cli ps1-ingest "Game (USA).chd" --out ./games                               # PS1: CHD/cue/bin/iso -> workspace
+aura-cli ps1-build ./games/SLUS-00561 --plan                                     # what a PS1 build would download
+aura-cli ps1-build ./games/SLUS-00561 --yes                                      # one click: native PS1 game
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`, `disc-info`, `disc-ls`, `disc-extract`, `ps2-ingest`, `ps2-package`, `ps2-build`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`, `--all` (disc-extract / ps2-ingest: whole disc), `--recompiler PATH` (ps2-ingest), `--exe PATH` / `--launcher PATH` / `--copy` (ps2-package), `--plan` / `--yes` / `--cache DIR` / `--no-package` / `--jobs N` / `--fast` / `--upstream-defaults` (ps2-build). Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database; set `AURA_PS2RECOMP` to the path of a `ps2_recomp` binary so the wizard/CLI can find it without `PATH`; set `AURA_LAUNCHER` to an `aura-launch` binary if it is not beside the program running the packaging; set `AURA_BUILD_CACHE` to move the one-click build cache.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`, `disc-info`, `disc-ls`, `disc-extract`, `ps2-ingest`, `ps2-package`, `ps2-build`, `ps1-ingest`, `ps1-build`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`, `--all` (disc-extract / ps2-ingest: whole disc), `--recompiler PATH` (ps2-ingest), `--exe PATH` / `--launcher PATH` / `--copy` (ps2-package), `--plan` / `--yes` / `--cache DIR` / `--no-package` / `--jobs N` / `--fast` / `--upstream-defaults` (ps2-build; `--plan/--yes/--cache/--no-package/--jobs` also apply to ps1-build). Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database; set `AURA_PS2RECOMP` to the path of a `ps2_recomp` binary so the wizard/CLI can find it without `PATH`; set `AURA_LAUNCHER` to an `aura-launch` binary if it is not beside the program running the packaging; set `AURA_BUILD_CACHE` (PS2) or `AURA_PS1_BUILD_CACHE` (PS1) to move the one-click build cache.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.
