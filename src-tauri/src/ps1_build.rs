@@ -24,6 +24,7 @@ use crate::build_common::{
     checkout_is_at, ensure_git_checkout, free_space_bytes, os, space_ok, BuildProgress, DownloadItem,
     Runner, ToolStatus,
 };
+use crate::ps1_patches::{self, ConfigAdditionInfo, PatchInfo, PatchOutcome};
 use crate::ps2_ingest;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -109,6 +110,11 @@ pub struct Ps1BuildPlan {
     pub can_build: bool,
     pub pinned_commit: String,
     pub project_dir: String,
+    /// Fixes Aura applies to the framework before building (empty with
+    /// `no_fixes` or a framework override).
+    pub framework_patches: Vec<PatchInfo>,
+    /// Title-specific `game.toml` additions for this game's serial.
+    pub config_additions: Vec<ConfigAdditionInfo>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -132,6 +138,9 @@ pub struct Ps1BuildOptions {
     pub toolchain_sha256: Option<String>,
     /// Skip the Windows/bash checks (tests with fake tools).
     pub skip_os_check: bool,
+    /// Build the framework and the game config exactly as they are: no
+    /// carried framework patches and no title-specific `game.toml` additions.
+    pub no_fixes: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +165,10 @@ pub struct Ps1BuildResult {
     /// `(stage, seconds)` in execution order.
     pub stage_secs: Vec<(String, f64)>,
     pub package: Option<Ps1Package>,
+    /// Framework fixes applied (or found already present) for this build.
+    pub framework_patches: Vec<PatchOutcome>,
+    /// Title-specific `game.toml` changes made to the project.
+    pub config_additions: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -596,6 +609,8 @@ pub fn plan_build(workspace: &Path, opts: &Ps1BuildOptions) -> Result<Ps1BuildPl
         can_build,
         pinned_commit: PINNED_COMMIT.to_string(),
         project_dir: workspace.join(slug).to_string_lossy().to_string(),
+        framework_patches: if opts.no_fixes || opts.framework_override.is_some() { vec![] } else { ps1_patches::planned() },
+        config_additions: if opts.no_fixes { vec![] } else { ps1_patches::planned_config(m.serial.as_deref()) },
     })
 }
 
@@ -1067,6 +1082,8 @@ pub fn build_game(
     let powershell = PathBuf::from(tc.powershell.path.clone().unwrap_or_default());
     let bash = tc.bash.path.clone().map(PathBuf::from);
     let mut warnings: Vec<String> = vec![];
+    let mut framework_patches: Vec<PatchOutcome> = vec![];
+    let mut config_additions: Vec<String> = vec![];
 
     // ----- toolchain -----------------------------------------------------------
     let toolchain_root: Option<PathBuf> = match tc.build_tools_source.as_str() {
@@ -1080,6 +1097,14 @@ pub fn build_game(
     if opts.framework_override.is_none() {
         ensure_git_checkout(&mut r, &git, &framework, FRAMEWORK_URL, PINNED_COMMIT)?;
         expose_pinned_branch(&mut r, &git, &framework, PINNED_COMMIT)?;
+        if !opts.no_fixes {
+            // Commit the carried fixes onto the branch the project clones.
+            framework_patches =
+                ps1_patches::apply_to_base(&git, &framework, PINNED_COMMIT, PINNED_BRANCH, ps1_patches::FRAMEWORK_PATCHES)?;
+            for p in &framework_patches {
+                r.push_line(&format!("framework fix: {} ({})", p.title, p.state));
+            }
+        }
     } else if !framework.join(SETUP_SCRIPT).is_file() {
         return Err(format!("{} is not a PSXRecomp checkout (no {SETUP_SCRIPT}).", framework.display()));
     }
@@ -1156,6 +1181,30 @@ pub fn build_game(
     r.run("PSXRecomp project setup", &powershell, &args, Some(&workspace), |line| mapper.line(line))?;
     let build_dir = project_dir.join("build-release");
 
+    // ----- title-specific config -------------------------------------------------
+    if !opts.no_fixes {
+        if let Some(serial) = m.serial.as_deref() {
+            // The project's own game.toml (so a rebuild keeps it) and the copy
+            // staged next to the program, which is what gets packaged and read.
+            for file in [project_dir.join("game.toml"), build_dir.join("game.toml")] {
+                if !file.is_file() {
+                    continue;
+                }
+                match ps1_patches::apply_config_to_file(&file, serial, false) {
+                    Ok(changes) => {
+                        for c in changes {
+                            r.push_line(&format!("title fix in {}: {c}", file.display()));
+                            if !config_additions.contains(&c) {
+                                config_additions.push(c);
+                            }
+                        }
+                    }
+                    Err(e) => warnings.push(format!("Could not add the title-specific fixes to {}: {e}", file.display())),
+                }
+            }
+        }
+    }
+
     // ----- package -------------------------------------------------------------
     let exe_path = find_built_exe(&build_dir).ok_or_else(|| {
         format!(
@@ -1191,6 +1240,8 @@ pub fn build_game(
         elapsed_secs: elapsed,
         stage_secs,
         package,
+        framework_patches,
+        config_additions,
         warnings,
     })
 }

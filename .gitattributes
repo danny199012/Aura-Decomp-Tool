@@ -1,0 +1,2 @@
+# Patches are applied with `git apply` against LF blobs; a CRLF checkout would not apply.
+*.patch text eol=lf

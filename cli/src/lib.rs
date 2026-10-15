@@ -56,6 +56,8 @@ pub mod ps1_build;
 pub mod ps1_ingest;
 #[path = "../../src-tauri/src/ps1_options.rs"]
 pub mod ps1_options;
+#[path = "../../src-tauri/src/ps1_patches.rs"]
+pub mod ps1_patches;
 #[path = "../../src-tauri/src/disc.rs"] pub mod disc;
 #[path = "../../src-tauri/src/ps2_ingest.rs"] pub mod ps2_ingest;
 #[path = "../../src-tauri/src/launcher_core.rs"] pub mod launcher_core;
@@ -78,3 +80,5 @@ mod tests_ps1_build;
 mod tests_lean;
 #[cfg(test)]
 mod tests_ps1_options;
+#[cfg(test)]
+mod tests_ps1_patches;

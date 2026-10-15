@@ -27,6 +27,7 @@ mod disc;
 mod ps1_build;
 mod ps1_ingest;
 mod ps1_options;
+mod ps1_patches;
 mod psx_exe;
 mod ps2_ingest;
 mod ps2_package;
