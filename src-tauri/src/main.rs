@@ -21,6 +21,8 @@ mod call_graph;
 mod cfg;
 mod decomp;
 mod decomp_export;
+mod disc;
+mod ps2_ingest;
 mod project;
 mod search;
 mod lzx;
@@ -39,7 +41,9 @@ use serde::{Deserialize, Serialize};
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1037,6 +1041,103 @@ fn scan_ps1_symbols(path: String) -> Result<ps1_symbols::Ps1SymbolScanResult, St
     let info = parse_elf_file(path)?;
     Ok(ps1_symbols::build_ps1_scan_result(&info.sections))
 }
+
+// ===================== Disc-image ingest / one-click wizard =====================
+//
+// Thin Tauri wrappers over `disc` + `ps2_ingest` (the same code `aura-cli`
+// runs). Long operations execute on a blocking worker and stream
+// `ingest-progress` events to the frontend; at most one ingest runs at a time.
+
+static INGEST_RUNNING: AtomicBool = AtomicBool::new(false);
+static INGEST_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Read-only: identify a disc image (platform, serial, boot file, warnings).
+#[tauri::command]
+async fn disc_inspect(path: String) -> Result<ps2_ingest::DiscInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || ps2_ingest::inspect_image(&path))
+        .await
+        .map_err(|e| format!("Inspect task failed: {e}"))?
+}
+
+/// Run the full PS2 pipeline: extract, analyse, write the ps2_recomp project,
+/// and (optionally) run `ps2_recomp`. Emits `ingest-progress` events.
+#[tauri::command]
+async fn ps2_ingest_run(
+    app: tauri::AppHandle,
+    path: String,
+    out_root: String,
+    mode: ps2_ingest::ExtractMode,
+    recompiler: Option<String>,
+) -> Result<ps2_ingest::IngestResult, String> {
+    if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("An ingest is already running.".into());
+    }
+    INGEST_CANCEL.store(false, Ordering::SeqCst);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let opts = ps2_ingest::IngestOptions { out_root, mode, recompiler };
+        ps2_ingest::ingest_ps2(&path, &opts, &mut |p| {
+            let _ = app.emit("ingest-progress", p);
+            !INGEST_CANCEL.load(Ordering::SeqCst)
+        })
+    })
+    .await;
+    INGEST_RUNNING.store(false, Ordering::SeqCst);
+    joined.map_err(|e| format!("Ingest task failed: {e}"))?
+}
+
+/// Ask a running ingest to stop at the next progress checkpoint.
+#[tauri::command]
+fn ps2_ingest_cancel() {
+    INGEST_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// Native picker for a disc image. `None` if the user cancelled.
+#[tauri::command]
+fn pick_disc_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .add_filter("Disc images", &["iso", "bin", "img", "cue", "mdf", "nrg"])
+        .add_filter("All Files", &["*"])
+        .pick_file(move |p| {
+            tx.send(p.map(|f| f.to_string())).ok();
+        });
+    rx.recv().map_err(|_| "Dialog channel closed".to_string())
+}
+
+/// Native picker for the `ps2_recomp` binary. `None` if the user cancelled.
+#[tauri::command]
+fn pick_recompiler(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_file(move |p| {
+        tx.send(p.map(|f| f.to_string())).ok();
+    });
+    rx.recv().map_err(|_| "Dialog channel closed".to_string())
+}
+
+/// Best-effort lookup of `ps2_recomp` (AURA_PS2RECOMP, then PATH).
+#[tauri::command]
+fn find_ps2_recompiler() -> Option<String> {
+    ps2_ingest::find_recompiler(None).map(|p| p.to_string_lossy().to_string())
+}
+
+/// Open a folder in the OS file manager (the workspace after an ingest).
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    // Directories only: handing a file to the OS opener could execute it.
+    if !p.is_dir() {
+        return Err(format!("{path} is not a folder"));
+    }
+    #[cfg(target_os = "windows")]
+    let res = std::process::Command::new("explorer").arg(p).spawn();
+    #[cfg(target_os = "macos")]
+    let res = std::process::Command::new("open").arg(p).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let res = std::process::Command::new("xdg-open").arg(p).spawn();
+    res.map(|_| ()).map_err(|e| format!("Could not open file manager: {e}"))
+}
+
 #[tokio::main]
 async fn main() {
     tauri::Builder::default()
@@ -1092,6 +1193,13 @@ async fn main() {
             get_sdk_db_stats,
             export_decomp_project,
             get_interactive_call_graph,
+            disc_inspect,
+            ps2_ingest_run,
+            ps2_ingest_cancel,
+            pick_disc_image,
+            pick_recompiler,
+            find_ps2_recompiler,
+            reveal_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aura Decomp Tool");

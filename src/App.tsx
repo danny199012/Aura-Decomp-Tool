@@ -14,10 +14,13 @@ import SdkScanView from './components/SdkScanView';
 import ExportView from './components/ExportView';
 import HexView from './components/HexView';
 import Ps1View from './components/Ps1View';
+import IsoWizardView from './components/IsoWizardView';
 import ThemeSwitcher from './components/ThemeSwitcher';
 
-function renderView(view: ViewId): JSX.Element {
+function renderView(view: ViewId, navigate: (v: ViewId) => void): JSX.Element {
   switch (view) {
+    case 'wizard':
+      return <IsoWizardView onNavigate={navigate} />;
     case 'binary':
       return <BinaryView />;
     case 'disasm':
@@ -77,6 +80,7 @@ const SHORTCUTS: Shortcut[] = [
 /** Friendly label for a view id (used by the help overlay + shortcuts). */
 function labelFor(v: ViewId): string {
   switch (v) {
+    case 'wizard': return 'One-click disc wizard';
     case 'home': return 'Home / Open';
     case 'binary': return 'Binary info';
     case 'disasm': return 'Disassembly';
@@ -101,9 +105,22 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
 }
 
+/** Set once the wizard has been shown, so only the very first launch lands on it. */
+const WIZARD_SEEN_KEY = 'aura-wizard-seen';
+
+/** First launch → the one-click disc wizard; afterwards → Home. Pure read:
+ *  the flag is written from an effect so StrictMode's double init is harmless. */
+function initialView(): ViewId {
+  try {
+    return localStorage.getItem(WIZARD_SEEN_KEY) ? 'home' : 'wizard';
+  } catch {
+    return 'home';
+  }
+}
+
 export default function App() {
   const [summary, setSummary] = useState<BinarySummary | null>(null);
-  const [view, setView] = useState<ViewId>('home');
+  const [view, setView] = useState<ViewId>(initialView);
   const [error, setError] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
@@ -141,6 +158,15 @@ export default function App() {
   }, [loadPath]);
 
   const context = useMemo(() => ({ summary, loadPath, error, clear }), [summary, loadPath, error, clear]);
+
+  // Remember that the first-run wizard has been shown.
+  useEffect(() => {
+    try {
+      localStorage.setItem(WIZARD_SEEN_KEY, '1');
+    } catch {
+      /* storage blocked — the wizard simply shows again next launch */
+    }
+  }, []);
 
   // Global keyboard shortcuts. Registered once; reads latest state via deps so
   // navigation stays in sync with the current view / loaded file.
@@ -206,7 +232,7 @@ export default function App() {
                 {error}
               </div>
             )}
-            {renderView(view)}
+            {renderView(view, setView)}
           </main>
         </div>
 

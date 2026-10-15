@@ -162,6 +162,18 @@ The day-to-day UX polish that makes Aura pleasant to use:
 - **splat-compatible** — The `splat.yaml` output is structured for use with the popular [splat](https://github.com/ethteck/splat) segment splitter, with per-function subsegments in code sections.
 - **Tauri command** — `export_decomp_project(path, platform, output_dir)` writes all files and returns a summary with function counts and named/SDK-matched statistics.
 
+### One-Click Disc Wizard (PS2)
+Point Aura at a PS2 disc image you own and it builds a ready-to-run [`ps2_recomp`](https://github.com/ran-j/PS2Recomp) project — in the GUI (**One-click disc wizard**, the landing page on first launch) or from the command line (`aura-cli ps2-ingest`).
+- **Disc-image reader** (`disc.rs`) — a streaming ISO9660 reader that never loads the whole image into RAM (PS2 DVDs are up to ~8 GB). Sector layouts are auto-detected: cooked 2048-byte `.iso`, raw MODE1/2352 and MODE2-form1/2352 `.bin`/`.img`/`.mdf`, MODE2/2336 and 2448-byte-with-subchannel. `.cue` sheets are followed to their data track. Handles nested and multi-sector directories and multi-extent files.
+- **Hostile-input safe** — every length from the image is bounds-checked: truncated images, directory loops, garbage directories and absurd extents produce a clear error, not a panic, a hang or an unbounded allocation. Extracted names are sanitised (no `..`, separators, reserved characters or Windows device names) and collisions never overwrite each other.
+- **Boot detection** — parses `SYSTEM.CNF` (`BOOT2 = cdrom0:\SLUS_203.12;1`), resolves the boot ELF case-insensitively, validates it is a 32-bit little-endian MIPS ELF, derives the product serial (`SLUS-20312`) and a coarse region, and reports PS1 discs (`BOOT =`) and non-PlayStation discs clearly instead of failing obscurely.
+- **Extract what's needed** — *Executables only* (default: `SYSTEM.CNF`, the boot ELF and every ELF/IRX on the disc, a few MB) or *Entire disc*. Cancellable, with live progress.
+- **Analysis + config** — runs the existing function detection and SCE SDK symbol matching on the boot ELF and writes `recomp/config.toml` + `recomp/functions.csv` in the schema `ps2_recomp` consumes, plus `game.json` (a manifest) and a project `README.md` with the next steps.
+- **Optional recompiler run** — if you point the wizard at a `ps2_recomp` binary (or set `AURA_PS2RECOMP` / put it on `PATH`), it runs it for you and shows the log tail.
+- **Retail-ELF fix** — ELFs with no section headers (common in retail PS2 executables) now fall back to their `PT_LOAD` program headers, so function detection no longer finds nothing on them.
+
+What this does **not** do: compile the generated C++ or supply the PS2 runtime. Those come from the upstream ps2recomp project (CMake + a C++20 compiler + its `ps2xRuntime` library), which describes itself as experimental. Aura prepares and organises the project; it does not (yet) produce a finished game executable. CHD, CSO/ZSO and archive containers are detected and rejected with instructions to convert them first. No game data, keys or BIOS are bundled — you supply your own disc image.
+
 ### Interactive Call Graph
 - **D3.js-ready data** — Produces a JSON-serializable graph (nodes + edges) optimized for force-directed visualization in the web UI. Each node carries function name, address, size, library attribution, call count, called-by count, and entry-point/external flags. Each edge carries source/target IDs, callsite address, and call kind (jal/jump).
 - **Graph statistics** — Includes summary stats: total/named/external function counts, total edges, max call depth (BFS from entry point), detected libraries, and top-20 hub functions (ranked by call + called-by score).
@@ -298,6 +310,7 @@ Aura-Decomp-Tool/
 │   ├── types.ts              # Typings mirroring every backend command return
 │   ├── lib/
 │   │   ├── tauri.ts          # invoke wrapper + binary probe/router + disasm dispatch
+│   │   ├── ingest.ts         # disc-wizard commands, progress + drag-drop events
 │   │   ├── themes.ts         # data-theme switcher (midnight/aurora/synthwave/carbon)
 │   │   ├── format.ts         # hex/byte formatting helpers
 │   │   └── FileContext.ts    # React context holding the currently-loaded binary
@@ -312,10 +325,13 @@ Aura-Decomp-Tool/
 │       ├── callgraph/ForceGraph.tsx
 │       ├── SdkScanView.tsx   # SDK symbol scan + DB coverage
 │       ├── ExportView.tsx    # decomp project + ps2recomp config export
+│       ├── IsoWizardView.tsx # one-click disc wizard (first-run landing page)
 │       └── Ps1View.tsx       # PS1 analysis + symbols + enhanced graph
 ├── src-tauri/                # Rust backend
 │   ├── src/
 │   │   ├── main.rs           # Tauri commands + generate_handler register
+│   │   ├── disc.rs           # streaming ISO9660 disc-image reader + extractor
+│   │   ├── ps2_ingest.rs     # PS2 disc -> boot ELF -> ps2_recomp project pipeline
 │   │   ├── lzx.rs            # pure-Rust LZX decompressor (Xbox 360 XEX)
 │   │   ├── xbox.rs           # Original Xbox XBE parser + 32-bit x86 disasm
 │   │   ├── xbox360.rs        # Xbox 360 XEX parser + BE PPC disasm
@@ -404,8 +420,13 @@ aura-cli formats --json
 aura-cli sdk-db --json
 aura-cli nid-db --json
 aura-cli ps4-nid-scan eboot.bin --json
+aura-cli disc-info game.iso --json
+aura-cli disc-ls game.iso
+aura-cli disc-extract game.iso --out ./disc        # executables only; add --all for everything
+aura-cli ps2-ingest game.iso --out ./games          # one-click: extract + analyse + ps2_recomp project
+aura-cli ps2-ingest game.iso --out ./games --recompiler /path/to/ps2_recomp
 ```
 
-Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`. Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database.
+Commands: `info`, `sections`, `disasm`, `sdk-scan`, `ps4-nid-scan`, `callgraph`, `cfg`, `xrefs`, `decompile`, `decompile-ppc`, `project`, `script`, `strings`, `search`, `string-xrefs`, `patch-export`, `export`, `formats`, `sdk-db`, `nid-db`, `disc-info`, `disc-ls`, `disc-extract`, `ps2-ingest`. Common flags: `--json`, `--out PATH`, `--section NAME` (section name / project action / search kind / patch output), `--at ADDR` (for xrefs/decompile/search), `--script PATH`, `--platform NAME`, `--max N`, `--all` (disc-extract / ps2-ingest: whole disc), `--recompiler PATH` (ps2-ingest). Exit codes: **0** ok, **1** analysis error, **2** usage error. Set `AURA_SCE_DB_DIR` to a directory with `symbols.json` + `tree.json` to extend the SDK symbol database; set `AURA_PS4_NID_DB` to an `aerolib.csv` to override the embedded PS4/PS5 NID database; set `AURA_PS2RECOMP` to the path of a `ps2_recomp` binary so the wizard/CLI can find it without `PATH`.
 
 Build it with `./build.bat` (Windows) or `./build.sh` (Unix) — it produces `cli/target/release/aura-cli`.

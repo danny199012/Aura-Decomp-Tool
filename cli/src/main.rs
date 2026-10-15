@@ -31,6 +31,10 @@ struct Args {
     json: bool,
     help: bool,
     version: bool,
+    /// `--all`: extract the whole disc instead of just the executables.
+    all: bool,
+    /// `--recompiler PATH`: a `ps2_recomp` binary to run after ingest.
+    recompiler: Option<String>,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
@@ -42,6 +46,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--json" => a.json = true,
+            "--all" => a.all = true,
+            "--recompiler" => { a.recompiler = Some(argv.get(i + 1).cloned().ok_or("--recompiler needs a value (path to ps2_recomp)")?); i += 1; }
             "--section" => { a.section = Some(argv.get(i + 1).cloned().ok_or("--section needs a value")?); i += 1; }
             "--at" => { a.at = Some(argv.get(i + 1).cloned().ok_or("--at needs a value (hex address)")?); i += 1; }
             "--script" => { a.script = Some(argv.get(i + 1).cloned().ok_or("--script needs a value (path)")?); i += 1; }
@@ -76,7 +82,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n\nGLOBAL OPTIONS\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -904,6 +910,113 @@ fn parse_u32_value(s: &str) -> Result<u32, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Disc-image ingest commands
+// ---------------------------------------------------------------------------
+
+fn fmt_size(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u + 1 < UNITS.len() {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[u]) }
+}
+
+fn cmd_disc_info(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("disc-info needs a disc image path")?;
+    let info = ps2_ingest::inspect_image(file)?;
+    if a.json { return Ok(serde_json::to_string_pretty(&info).unwrap_or_default()); }
+    let mut t = String::new();
+    t.push_str(&format!("Image:        {} ({})\n", info.image_path, fmt_size(info.image_size)));
+    t.push_str(&format!("Layout:       {}\n", info.layout));
+    t.push_str(&format!("Platform:     {}\n", info.platform));
+    t.push_str(&format!("Title:        {} (volume {})\n", info.display_name, info.volume_id));
+    if let Some(s) = &info.serial { t.push_str(&format!("Serial:       {s} — {}\n", info.region)); }
+    if let (Some(k), Some(v)) = (&info.boot_key, &info.boot_value) {
+        t.push_str(&format!("Boot:         {k} = {v}\n"));
+    }
+    if let Some(f) = &info.boot_file {
+        t.push_str(&format!("Boot file:    {f} ({}, {})\n", fmt_size(info.boot_size),
+            if info.boot_is_ps2_elf { "valid PS2 ELF" } else { "not a PS2 ELF" }));
+    }
+    if let Some(v) = &info.vmode { t.push_str(&format!("Video mode:   {v}\n")); }
+    t.push_str(&format!("Files:        {} in {} directories, {}\n", info.file_count, info.dir_count, fmt_size(info.total_bytes)));
+    t.push_str(&format!("Executables:  {} ELF/IRX files\n", info.executable_count));
+    t.push_str(&format!("Can ingest:   {}\n", if info.can_ingest { "yes" } else { "no" }));
+    for w in &info.warnings { t.push_str(&format!("warning: {w}\n")); }
+    Ok(t)
+}
+
+fn cmd_disc_ls(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("disc-ls needs a disc image path")?;
+    let (mut img, _) = disc::open_disc_file(file)?;
+    let entries = img.list_entries()?;
+    if a.json { return Ok(serde_json::to_string_pretty(&entries).unwrap_or_default()); }
+    let mut t = String::new();
+    for e in entries.iter().take(a.max) {
+        if e.is_dir { t.push_str(&format!("{:>12}  {}/\n", "<dir>", e.path)); }
+        else { t.push_str(&format!("{:>12}  {}\n", e.size, e.path)); }
+    }
+    if entries.len() > a.max { t.push_str(&format!("... and {} more (raise --max)\n", entries.len() - a.max)); }
+    Ok(t)
+}
+
+fn cmd_disc_extract(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("disc-extract needs a disc image path")?;
+    let out = a.out.as_ref().ok_or("disc-extract needs --out DIR")?;
+    let (mut img, _) = disc::open_disc_file(file)?;
+    let entries = img.list_entries()?;
+    let mode = if a.all { ps2_ingest::ExtractMode::All } else { ps2_ingest::ExtractMode::Executables };
+    let plan = ps2_ingest::plan_extraction(&mut img, &entries, mode);
+    let mut last_pct = 101u64;
+    let summary = img.extract_entries(&plan, std::path::Path::new(out), &mut |p| {
+        if !a.json && p.bytes_total > 0 {
+            let pct = p.bytes_done * 100 / p.bytes_total;
+            if pct != last_pct && pct % 5 == 0 { last_pct = pct; eprintln!("  {pct:>3}%  {}", p.current); }
+        }
+        true
+    })?;
+    if a.json { return Ok(serde_json::to_string_pretty(&summary).unwrap_or_default()); }
+    Ok(format!("Extracted {} files ({}) to {}\n", summary.files.len(), fmt_size(summary.bytes), summary.root))
+}
+
+fn cmd_ps2_ingest(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("ps2-ingest needs a disc image path")?;
+    let out = a.out.clone().ok_or("ps2-ingest needs --out DIR")?;
+    let opts = ps2_ingest::IngestOptions {
+        out_root: out,
+        mode: if a.all { ps2_ingest::ExtractMode::All } else { ps2_ingest::ExtractMode::Executables },
+        recompiler: a.recompiler.clone(),
+    };
+    let mut last_stage = String::new();
+    let res = ps2_ingest::ingest_ps2(file, &opts, &mut |p| {
+        if !a.json && p.stage != last_stage {
+            last_stage = p.stage.clone();
+            eprintln!("[{:>3}%] {}", (p.fraction * 100.0) as u32, p.message);
+        }
+        true
+    })?;
+    if a.json { return Ok(serde_json::to_string_pretty(&res).unwrap_or_default()); }
+    let mut t = String::new();
+    t.push_str(&format!("{} [{}] — {}\n", res.display_name, res.serial.clone().unwrap_or_else(|| "no serial".into()), res.region));
+    t.push_str(&format!("Workspace:    {}\n", res.workspace));
+    t.push_str(&format!("Boot ELF:     {} (entry 0x{:08X})\n", res.elf_path, res.entry_point));
+    t.push_str(&format!("Functions:    {} ({} SDK-named)\n", res.function_count, res.sdk_named));
+    t.push_str(&format!("Extracted:    {} files, {}\n", res.extracted_files, fmt_size(res.extracted_bytes)));
+    t.push_str(&format!("Config:       {}\n", res.config_toml));
+    if let Some(r) = &res.recompiler {
+        t.push_str(&format!("ps2_recomp:   {} ({} files generated, log {})\n",
+            if r.success { "ok" } else { "FAILED" }, r.generated_files, r.log_path));
+    }
+    for w in &res.warnings { t.push_str(&format!("warning: {w}\n")); }
+    t.push_str("\nNext steps:\n");
+    for (i, s) in res.next_steps.iter().enumerate() { t.push_str(&format!("  {}. {s}\n", i + 1)); }
+    Ok(t)
+}
+
+// ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
 
@@ -935,6 +1048,12 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "nid-db" => cmd_nid_db(&a).and_then(|t| Ok(emit(&a.out, t))),
         "ps4-nid-scan" => cmd_ps4_nid_scan(&a).and_then(|t| Ok(emit(&a.out, t))),
         "decompile-ppc" => cmd_decompile_ppc(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "disc-info" => cmd_disc_info(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "disc-ls" => cmd_disc_ls(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        // These write their own files under --out DIR, so print the summary
+        // rather than letting `emit` try to overwrite the directory.
+        "disc-extract" => cmd_disc_extract(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
+        "ps2-ingest" => cmd_ps2_ingest(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         cmd => Err(format!("Unknown command: {cmd}. Try --help")),
     }
 }

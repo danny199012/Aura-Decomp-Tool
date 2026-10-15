@@ -174,10 +174,10 @@ pub fn parse_elf_data(data: &[u8], filename: &str) -> Result<ElfFileInfo, String
     let e_machine = read_u16(&data, 18, is_little_endian);
     let _e_version = read_u32(&data, 20, is_little_endian);
     let e_entry = read_u32(&data, 24, is_little_endian);
-    let _e_phoff = read_u32(&data, 28, is_little_endian);
+    let e_phoff = read_u32(&data, 28, is_little_endian);
     let e_shoff = read_u32(&data, 32, is_little_endian);
-    let _e_phentsize = read_u16(&data, 42, is_little_endian);
-    let _e_phnum = read_u16(&data, 44, is_little_endian);
+    let e_phentsize = read_u16(&data, 42, is_little_endian);
+    let e_phnum = read_u16(&data, 44, is_little_endian);
     let e_shentsize = read_u16(&data, 46, is_little_endian);
     let e_shnum = read_u16(&data, 48, is_little_endian);
     let e_shstrndx = read_u16(&data, 50, is_little_endian);
@@ -312,6 +312,57 @@ pub fn parse_elf_data(data: &[u8], filename: &str) -> Result<ElfFileInfo, String
         }
     }
 
+    // ---- Program-header fallback ------------------------------------------
+    // Retail PS2 executables are frequently shipped with no section headers at
+    // all (e_shnum == 0), leaving only PT_LOAD program headers. Without this
+    // fallback such a file parses to zero sections and function detection finds
+    // nothing. Synthesize one section per loadable segment instead: executable
+    // segments become `.text` (SHF_ALLOC|SHF_EXECINSTR, matching what the
+    // downstream code-section checks look for), the rest `.data`.
+    //
+    // A PT_LOAD with PF_X can also hold read-only data; with no section
+    // boundaries to go on, that is the best segment-level approximation.
+    if sections.is_empty() && e_phnum > 0 && e_phentsize >= 32 && e_phoff > 0 {
+        let mut text_n = 0usize;
+        let mut data_n = 0usize;
+        for i in 0..e_phnum as usize {
+            let off = e_phoff as usize + i * e_phentsize as usize;
+            if off + 32 > data.len() {
+                break;
+            }
+            let p_type = read_u32(&data, off, is_little_endian);
+            if p_type != 1 {
+                continue; // PT_LOAD only
+            }
+            let p_offset = read_u32(&data, off + 4, is_little_endian);
+            let p_vaddr = read_u32(&data, off + 8, is_little_endian);
+            let p_filesz = read_u32(&data, off + 16, is_little_endian);
+            let p_flags = read_u32(&data, off + 24, is_little_endian);
+            let start = p_offset as usize;
+            if p_filesz == 0 || start >= data.len() {
+                continue;
+            }
+            let end = std::cmp::min(start + p_filesz as usize, data.len());
+            let exec = (p_flags & 0x1) != 0; // PF_X
+            let writable = (p_flags & 0x2) != 0; // PF_W
+            let name = if exec {
+                text_n += 1;
+                if text_n == 1 { ".text".to_string() } else { format!(".text_{text_n}") }
+            } else {
+                data_n += 1;
+                if data_n == 1 { ".data".to_string() } else { format!(".data_{data_n}") }
+            };
+            sections.push(ElfSection {
+                name,
+                address: p_vaddr,
+                size: (end - start) as u32,
+                offset: p_offset,
+                data: data[start..end].to_vec(),
+                flags: 0x2 | if exec { 0x4 } else { 0 } | if writable { 0x1 } else { 0 },
+            });
+        }
+    }
+
     // Sort sections by address
     sections.sort_by_key(|s| s.address);
 
@@ -339,7 +390,7 @@ pub fn parse_elf_data(data: &[u8], filename: &str) -> Result<ElfFileInfo, String
 /// Parse ELF32 relocations from SHT_REL (9) and SHT_RELA (4) sections.
 /// Pure function (no I/O) so it can be unit-tested in isolation.
 /// Resolves each relocation's symbol name via the linked symbol + string tables.
-fn parse_relocations(
+pub fn parse_relocations(
     data: &[u8],
     e_shoff: u32,
     e_shnum: u16,
@@ -1039,7 +1090,7 @@ pub fn build_call_graph(mut raw: Vec<RawCallEdge>, funcs: &[FunctionEntry]) -> C
 /// the -AL variants), and BEQL/BNEL. A plain `jr $ra` (SPECIAL funct 0x08)
 /// and `jalr` (0x09) are included, since the delay slot is what carries the
 /// instruction that actually returns control.
-fn has_delay_slot(instr: u32) -> bool {
+pub fn has_delay_slot(instr: u32) -> bool {
     let op = (instr >> 26) & 0x3F;
     // SPECIAL: JR (0x08), JALR (0x09). A raw nop is `0x00000000` (op 0, funct
     // 0 = SLL) and must NOT be flagged here, so check funct explicitly.
@@ -1073,7 +1124,7 @@ fn has_delay_slot(instr: u32) -> bool {
 ///
 /// Only ever *shortens* End; never grows it. Returns `end_current` unchanged if
 /// the function isn't in the given section or the trim would empty it.
-fn refine_end(
+pub fn refine_end(
     data: &[u8],
     base: u32,
     start: u32,
@@ -1115,7 +1166,7 @@ fn refine_end(
 /// Apply `refine_end` to every detected function against its containing
 /// executable section. Functions whose start isn't in a known section (or whose
 /// trim would leave no body) are left with their JAL-scan End unchanged.
-fn refine_function_boundaries(
+pub fn refine_function_boundaries(
     sections: &[ElfSection],
     funcs: &mut [FunctionEntry],
     is_little_endian: bool,
@@ -1622,7 +1673,7 @@ pub fn toml_basic_string(s: &str) -> String {
 }
 
 /// Build the config.toml body for a ps2recomp config bundle (pure, testable).
-/// Mirrors the schema ExportPS2Functions.java emits so `ps2recomp config.toml`
+/// Mirrors the schema ExportPS2Functions.java emits so `ps2_recomp config.toml`
 /// consumes it directly.
 pub fn build_config_toml(
     path: &str,
@@ -1637,7 +1688,7 @@ pub fn build_config_toml(
 ) -> String {
     let mut t = String::new();
     t.push_str("# Auto-generated by Aura Decomp Tool\n");
-    t.push_str("# Consumed by ps2recomp: `ps2recomp config.toml`\n");
+    t.push_str("# Consumed by ps2_recomp: `ps2_recomp config.toml`\n");
     t.push_str("#\n");
     t.push_str("# Notes:\n");
     t.push_str("# - ghidra_output points at the function CSV (Name,Start,End,Size).\n");

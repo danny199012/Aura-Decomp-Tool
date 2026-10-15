@@ -44,6 +44,10 @@ pub use engine::*;
 #[path = "../../src-tauri/src/decomp_export.rs"] pub mod decomp_export;
 #[path = "../../src-tauri/src/ps1_symbols.rs"] pub mod ps1_symbols;
 #[path = "../../src-tauri/src/nid_db.rs"] pub mod nid_db;
+#[path = "../../src-tauri/src/disc.rs"] pub mod disc;
+#[path = "../../src-tauri/src/ps2_ingest.rs"] pub mod ps2_ingest;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_disc;

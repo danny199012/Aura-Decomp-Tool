@@ -3,6 +3,7 @@ import { useFile } from '../lib/FileContext';
 import type { BinarySummary } from '../lib/tauri';
 
 export type ViewId =
+  | 'wizard'
   | 'home'
   | 'binary'
   | 'disasm'
@@ -24,6 +25,7 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
+  { id: 'wizard', label: 'One-click disc wizard', icon: '⚡' },
   { id: 'home', label: 'Home / Open', icon: '𝌆' },
   { id: 'binary', label: 'Binary info', icon: '▤', needsFile: true },
   { id: 'disasm', label: 'Disassembly', icon: '⌗', needsFile: true },
