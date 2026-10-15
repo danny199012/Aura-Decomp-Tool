@@ -36,6 +36,7 @@ mod project;
 mod search;
 mod lzx;
 mod ppc_disasm;
+mod sh4_disasm;
 mod nid_db;
 mod ps3;
 mod ps4ps5;

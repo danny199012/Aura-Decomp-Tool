@@ -31,6 +31,7 @@ pub use engine::*;
 #[path = "../../src-tauri/src/gamecube.rs"] pub mod gamecube;
 #[path = "../../src-tauri/src/lzx.rs"] pub mod lzx;
 #[path = "../../src-tauri/src/ppc_disasm.rs"] pub mod ppc_disasm;
+#[path = "../../src-tauri/src/sh4_disasm.rs"] pub mod sh4_disasm;
 #[path = "../../src-tauri/src/ps1_exe.rs"] pub mod ps1_exe;
 #[path = "../../src-tauri/src/ps1_memory_map.rs"] pub mod ps1_memory_map;
 #[path = "../../src-tauri/src/ps1_disasm.rs"] pub mod ps1_disasm;
@@ -80,5 +81,7 @@ mod tests_ps1_build;
 mod tests_lean;
 #[cfg(test)]
 mod tests_ps1_options;
+#[cfg(test)]
+mod tests_sh4;
 #[cfg(test)]
 mod tests_ps1_patches;

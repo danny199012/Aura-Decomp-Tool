@@ -70,10 +70,13 @@ struct Args {
     include_saves: bool,
     /// `--no-fixes`: build the framework and game config exactly as they are (ps1-build).
     no_fixes: bool,
+    /// `--base ADDR`: display (virtual) base address for raw SH-4 code
+    /// (disasm-sh4). Dreamcast user code defaults to 0x8C008000.
+    base: u32,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, String> {
-    let mut a = Args { max: 5000, ..Default::default() };
+    let mut a = Args { max: 5000, base: 0x8C00_8000, ..Default::default() };
     let mut i = 1;
     while i < argv.len() {
         let arg = &argv[i];
@@ -102,6 +105,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             "--recompiler" => { a.recompiler = Some(argv.get(i + 1).cloned().ok_or("--recompiler needs a value (path to ps2_recomp)")?); i += 1; }
             "--section" => { a.section = Some(argv.get(i + 1).cloned().ok_or("--section needs a value")?); i += 1; }
             "--at" => { a.at = Some(argv.get(i + 1).cloned().ok_or("--at needs a value (hex address)")?); i += 1; }
+            "--base" => { a.base = argv.get(i + 1).and_then(|x| u32::from_str_radix(x.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()).ok_or("--base needs a hex address")?; i += 1; }
             "--script" => { a.script = Some(argv.get(i + 1).cloned().ok_or("--script needs a value (path)")?); i += 1; }
             "--platform" => { a.platform = Some(argv.get(i + 1).cloned().ok_or("--platform needs a value")?); i += 1; }
             "--out" => { a.out = Some(argv.get(i + 1).cloned().ok_or("--out needs a value")?); i += 1; }
@@ -134,7 +138,7 @@ fn json_or_text(json: bool, value: serde_json::Value, plain: String) -> String {
 }
 
 fn usage_string() -> String {
-    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps1-ingest      PS1 disc image (.chd/.cue/.bin/.iso) -> workspace with a cue/bin PSXRecomp can build (--out DIR)\n  ps1-build       One-click: build a PS1 workspace into a native game with PSXRecomp (--plan, --yes)\n  ps1-fix         Add the known title-specific game.toml fixes to an already built PS1 game folder\n  ps1-options     Tune a packaged PS1 game: video settings, enhancements, diagnose, reset state (--set, --preset, --mod, --reset-state)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --lean          (ps2-build) experimental: stop expanding every function that makes an indirect call (much smaller output)\n  --no-fixes      (ps1-build) build the framework and game config as they are, without the fixes Aura carries\n  --set K=V       (ps1-options) renderer | resolution | aspect | fullscreen | vsync | window-width (repeatable)\n  --preset NAME   (ps1-options) safe | balanced | sharp | max\n  --mod F=on|off  (ps1-options) switch an enhancement such as fast-loading, pgxp, hd-textures\n  --reset-state   (ps1-options) move the overlay cache, captures and freeze reports to a backup folder\n  --include-saves (ps1-options) with --reset-state, move save games too\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile) or search value (for search)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json".to_string()
+    "aura-cli — Aura Decomp Tool command-line interface\n\nUSAGE\n  aura-cli <command> [options] <file>\n\nCOMMANDS\n  info            Identify the file and print a summary\n  sections        List the binary's sections (address / size / type)\n  disasm          Disassemble a section (default: first code section)\n  sdk-scan        Run the SDK symbol database against the binary\n  ps4-nid-scan   Scan a PS4/PS5 binary's .dynsym and resolve NIDs via aerolib\n  callgraph       Build the direct call graph (JAL/J edges)\n  cfg             Build per-function control-flow graphs (recursive-descent)\n  xrefs           List cross-references to an address (--at 0xADDR)\n  decompile       Lift MIPS to C-like pseudocode (--at 0xADDR for one func, or all)\n  decompile-ppc   Lift a PPC (PS3/Wii U) code section to C-like pseudocode (first-pass)\n  disasm-sh4      Disassemble SH-4 (Dreamcast/Naomi) code from a raw binary (--at FILE-OFFSET, --base ADDR)\n  project         Create/apply a .aura project (--section save|apply --out FILE)\n  script          Run a Lua analysis script (--script PATH [--out PROJECT])\n  strings         List printable strings found in the binary (--max min-len)\n  search          Search for a pattern/string/immediate (--section kind --at VALUE)\n  string-xrefs    List code references to strings (MIPS lui+addiu idiom)\n  patch-export    Apply a project's patches and write a new binary (--out PROJ --section OUT)\n  export          Write a complete decomp project scaffold to --out DIR\n  formats         List the supported container formats\n  sdk-db          Show the loaded SCE SDK symbol database + external DB status\n  nid-db          Show the PS4/PS5 NID database + AURA_PS4_NID_DB status\n  disc-info       Identify a disc image (.iso/.bin/.cue): platform, serial, boot file\n  disc-ls         List the files on a disc image\n  disc-extract    Extract a disc image to --out DIR (executables only, or --all)\n  ps2-ingest      One-click: PS2 disc image -> extracted files + ps2_recomp project (--out DIR)\n  ps1-ingest      PS1 disc image (.chd/.cue/.bin/.iso) -> workspace with a cue/bin PSXRecomp can build (--out DIR)\n  ps1-build       One-click: build a PS1 workspace into a native game with PSXRecomp (--plan, --yes)\n  ps1-fix         Add the known title-specific game.toml fixes to an already built PS1 game folder\n  ps1-options     Tune a packaged PS1 game: video settings, enhancements, diagnose, reset state (--set, --preset, --mod, --reset-state)\n  ps2-package     Build a double-clickable game folder from an ingest workspace (--exe BUILT_RUNTIME)\n  ps2-build       One-click: compile an ingest workspace into a game exe and package it (--plan, --yes)\n\nGLOBAL OPTIONS\n  --all           (disc-extract / ps2-ingest) extract the whole disc, not just executables\n  --recompiler P  (ps2-ingest) run this ps2_recomp binary after writing the config\n  --exe PATH      (ps2-package) the runtime executable you built from ps2recomp\n  --launcher PATH (ps2-package) aura-launch binary to copy in (default: found beside aura-cli)\n  --copy          (ps2-package) copy the disc tree instead of hard-linking it\n  --plan          (ps2-build) only show what a build would download and do\n  --yes           (ps2-build) agree to the downloads (needed the first time)\n  --cache DIR     (ps2-build) build cache folder (default: %LOCALAPPDATA%\\AuraDecompTool\\ps2recomp)\n  --no-package    (ps2-build) stop after the exe is built\n  --upstream-defaults (ps2-build) keep upstream's debug overlay and console window\n  --fast          (ps2-build) upstream's whole-program-optimised release mode (faster game, slower build)\n  --lean          (ps2-build) experimental: stop expanding every function that makes an indirect call (much smaller output)\n  --no-fixes      (ps1-build) build the framework and game config as they are, without the fixes Aura carries\n  --set K=V       (ps1-options) renderer | resolution | aspect | fullscreen | vsync | window-width (repeatable)\n  --preset NAME   (ps1-options) safe | balanced | sharp | max\n  --mod F=on|off  (ps1-options) switch an enhancement such as fast-loading, pgxp, hd-textures\n  --reset-state   (ps1-options) move the overlay cache, captures and freeze reports to a backup folder\n  --include-saves (ps1-options) with --reset-state, move save games too\n  --section NAME  Section to disassemble (or action for project / kind for search / out-bin for patch-export)\n  --at ADDR       Hex address (for xrefs/decompile), search value (for search), or file offset (disasm-sh4)\n  --script PATH   Lua script path (for script)\n  --platform NAME PS1|PS2|PS3|PS4|PS5|Wii U|Xbox|Xbox 360\n  --base ADDR     (disasm-sh4) display base address for raw code (default 0x8C008000)\n  --out PATH      Write output to file (default: stdout)\n  --max N         Max instructions for disasm / max funcs for decompile / min string len for strings (default: 5000)\n  --json          Machine-readable JSON output\n  -h, --help      Show this help\n  -V, --version   Show version\n\nEXAMPLES\n  aura-cli info game.elf --json\n  aura-cli disasm eboot.bin --section seg0 --out disasm.txt\n  aura-cli sdk-scan game.elf --platform PS2 --json\n  aura-cli cfg game.elf --json\n  aura-cli xrefs game.elf --at 0x80123456 --json\n  aura-cli decompile game.elf --at 0x80123456\n  aura-cli decompile game.elf --json --max 100\n  aura-cli project game.elf --section save --out game.aura\n  aura-cli project game.elf --section apply --out game.aura --json\n  aura-cli script game.elf --script rename.lua --out game.aura --json\n  aura-cli strings game.elf --json\n  aura-cli search game.elf --section string --at \"hello\"\n  aura-cli search game.elf --section pattern --at 0x0F 0x00\n  aura-cli patch-export game.elf --out game.aura --section game_patched.elf\n  aura-cli export game.elf --platform PS2 --out ./decomp\n  aura-cli formats --json\n  aura-cli disasm-sh4 1ST_READ.BIN --at 0x20 --max 200".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +602,45 @@ fn cmd_decompile_ppc(a: &Args) -> Result<String, String> {
         })).unwrap_or_default())
     } else {
         Ok(d.pseudocode)
+    }
+}
+
+/// `aura-cli disasm-sh4 <file> [--at OFFSET] [--base ADDR] [--max N] [--json]`
+/// Disassemble SH-4 (Dreamcast / Naomi) machine code. The input is a raw
+/// little-endian instruction stream — a `1ST_READ.BIN` payload with its
+/// 32-byte header stripped (`--at 0x20`), a plain `.bin` track dump, or
+/// extracted code — so `--at` is a FILE OFFSET and `--base` supplies the
+/// display address (Dreamcast user space defaults to 0x8C008000).
+fn cmd_disasm_sh4(a: &Args) -> Result<String, String> {
+    let file = a.file.as_ref().ok_or("disasm-sh4 needs a file path")?;
+    let data = std::fs::read(file).map_err(|e| format!("Cannot read {file}: {e}"))?;
+    let offset = match &a.at {
+        Some(v) => usize::from_str_radix(v.trim_start_matches("0x").trim_start_matches("0X"), 16)
+            .map_err(|e| format!("--at must be a hex file offset: {e}"))?,
+        None => 0,
+    };
+    if offset >= data.len() {
+        return Err(format!("--at {offset} is past the end of {file} ({} bytes)", data.len()));
+    }
+    let insns = sh4_disasm::disassemble_sh4_at(&data, offset, a.base, a.max);
+    if a.json {
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "file": file, "base": a.base, "offset": offset,
+            "count": insns.len(), "instructions": insns,
+        })).unwrap_or_default())
+    } else {
+        let mut out = String::new();
+        for i in &insns {
+            out.push_str(&format!(
+                "{:08X}  {:04x}  {:<9} {}",
+                i.address, i.raw, i.mnemonic, i.operands
+            ));
+            if let Some(lit) = i.literal_address {
+                out.push_str(&format!("   ; [0x{lit:08x}]"));
+            }
+            out.push('\n');
+        }
+        Ok(out)
     }
 }
 
@@ -1529,6 +1572,7 @@ fn run(argv: &[String]) -> Result<i32, String> {
         "nid-db" => cmd_nid_db(&a).and_then(|t| Ok(emit(&a.out, t))),
         "ps4-nid-scan" => cmd_ps4_nid_scan(&a).and_then(|t| Ok(emit(&a.out, t))),
         "decompile-ppc" => cmd_decompile_ppc(&a).and_then(|t| Ok(emit(&a.out, t))),
+        "disasm-sh4" => cmd_disasm_sh4(&a).and_then(|t| Ok(emit(&a.out, t))),
         "disc-info" => cmd_disc_info(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         "disc-ls" => cmd_disc_ls(&a).and_then(|t| Ok({ println!("{t}"); 0 })),
         // These write their own files under --out DIR, so print the summary
