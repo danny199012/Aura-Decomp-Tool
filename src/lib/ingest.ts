@@ -78,6 +78,16 @@ export interface RecompilerRun {
   error: string | null;
 }
 
+/** What indirect calls/jumps cost the recompiler, measured before it runs. */
+export interface IndirectProfile {
+  functions: number;
+  functions_with_indirect_calls: number;
+  functions_with_indirect_jumps: number;
+  instructions: number;
+  fallback_entries_standard: number;
+  fallback_entries_lean: number;
+}
+
 export interface IngestResult {
   workspace: string;
   manifest_path: string;
@@ -100,6 +110,7 @@ export interface IngestResult {
   extract_mode: 'all' | 'executables' | string;
   /** `ret0@0xADDR` bindings written to the config's `stubs` (BIOS-patching SDK routines). */
   stubbed: string[];
+  indirect_profile: IndirectProfile;
   recompiler: RecompilerRun | null;
   next_steps: string[];
   warnings: string[];
@@ -259,6 +270,9 @@ export interface BuildPlan {
   blockers: string[];
   can_build: boolean;
   pinned_commit: string;
+  lean_indirect_calls: boolean;
+  lean_ready: boolean;
+  indirect_profile: IndirectProfile | null;
 }
 
 export interface BuildProgress {
@@ -279,6 +293,7 @@ export interface BuildResult {
   stage_secs: [string, number][];
   native_feel: boolean;
   fast_release: boolean;
+  lean_indirect_calls: boolean;
   package: PackageResult | null;
   warnings: string[];
 }
@@ -292,7 +307,16 @@ export const buildGame = (
   allowDownloads: boolean,
   nativeFeel: boolean,
   fastRelease: boolean,
-) => call<BuildResult>('build_ps2_game', { workspace, cacheDir, allowDownloads, nativeFeel, fastRelease });
+  leanIndirectCalls: boolean,
+) =>
+  call<BuildResult>('build_ps2_game', {
+    workspace,
+    cacheDir,
+    allowDownloads,
+    nativeFeel,
+    fastRelease,
+    leanIndirectCalls,
+  });
 
 /** Subscribe to `build-progress` events. Returns an unsubscribe function. */
 export async function onBuildProgress(cb: (p: BuildProgress) => void): Promise<UnlistenFn> {

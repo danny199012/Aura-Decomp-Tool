@@ -1209,6 +1209,7 @@ async fn build_ps2_game(
     allow_downloads: bool,
     native_feel: bool,
     fast_release: bool,
+    lean_indirect_calls: bool,
 ) -> Result<ps2_build::BuildResult, String> {
     if INGEST_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("Another job is already running.".into());
@@ -1221,6 +1222,7 @@ async fn build_ps2_game(
             package: true,
             native_feel,
             fast_release,
+            lean_indirect_calls,
             ..Default::default()
         };
         ps2_build::build_game(Path::new(&workspace), &opts, &mut |p| {

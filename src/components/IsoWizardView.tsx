@@ -49,6 +49,7 @@ const PREF_EXE = 'aura-wizard-runtime-exe';
 const PREF_CACHE = 'aura-wizard-build-cache';
 const PREF_NATIVE = 'aura-wizard-native-feel';
 const PREF_FAST = 'aura-wizard-fast-release';
+const PREF_LEAN = 'aura-wizard-lean-calls';
 
 /** localStorage that never throws (private windows, blocked storage). */
 function readPref(key: string): string {
@@ -133,6 +134,7 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
   const [cacheDir, setCacheDir] = useState(() => readPref(PREF_CACHE));
   const [nativeFeel, setNativeFeel] = useState(() => readPref(PREF_NATIVE) !== 'off');
   const [fastRelease, setFastRelease] = useState(() => readPref(PREF_FAST) === 'on');
+  const [leanCalls, setLeanCalls] = useState(() => readPref(PREF_LEAN) === 'on');
   const [buildPlan, setBuildPlan] = useState<BuildPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [buildBusy, setBuildBusy] = useState(false);
@@ -308,6 +310,7 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
     writePref(PREF_CACHE, cacheDir);
     writePref(PREF_NATIVE, nativeFeel ? 'on' : 'off');
     writePref(PREF_FAST, fastRelease ? 'on' : 'off');
+    writePref(PREF_LEAN, leanCalls ? 'on' : 'off');
     setBuildBusy(true);
     setBuildError(null);
     setBuildResult(null);
@@ -320,6 +323,7 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
         buildPlan.downloads.length > 0, // the button's label told the user what is downloaded
         nativeFeel,
         fastRelease,
+        leanCalls,
       );
       setBuildResult(r);
       if (r.package) setPkgResult(r.package);
@@ -786,6 +790,29 @@ export default function IsoWizardView({ onNavigate }: { onNavigate: (v: ViewId) 
                     Optimise for speed (upstream&apos;s whole-program release mode: a faster game, but a longer
                     and more memory-hungry build)
                   </label>
+
+                  {buildPlan.indirect_profile && buildPlan.indirect_profile.fallback_entries_standard > 0 && (
+                    <label className="flex items-start gap-2 text-xs text-fg-muted">
+                      <input
+                        className="mt-0.5"
+                        type="checkbox"
+                        checked={leanCalls}
+                        onChange={(e) => setLeanCalls(e.target.checked)}
+                      />
+                      <span>
+                        Smaller, faster build <span className="text-amber-300">(experimental)</span>: stop expanding
+                        every function that makes an indirect call. This game has{' '}
+                        {(
+                          buildPlan.indirect_profile.functions_with_indirect_calls +
+                          buildPlan.indirect_profile.functions_with_indirect_jumps
+                        ).toLocaleString()}{' '}
+                        such functions; a standard build adds about{' '}
+                        {buildPlan.indirect_profile.fallback_entries_standard.toLocaleString()} entry points, this
+                        about {buildPlan.indirect_profile.fallback_entries_lean.toLocaleString()}.
+                        {!buildPlan.lean_ready && leanCalls ? ' Builds a second recompiler once (about a minute).' : ''}
+                      </span>
+                    </label>
+                  )}
 
                   {buildPlan.blockers
                     .filter((b) => !buildPlan.toolchain.problems.includes(b) && !b.includes('entire disc'))
